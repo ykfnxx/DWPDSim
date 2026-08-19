@@ -8,7 +8,10 @@ from dwpdsim.models import (
     IOEvent,
     IOOperation,
     IOReason,
+    MemAdmissionResult,
     MemQueryResult,
+    Query,
+    StorageAccessResult,
     StorageTier,
 )
 
@@ -113,36 +116,55 @@ class MetricsCollector:
     def record_query(self, result: MemQueryResult) -> None:
         """Record one completed query result."""
 
-        self._query_count += 1
-        self._block_access_count += len(result.block_results)
+        self.record_query_start(result.query)
         for block_result in result.block_results:
             if block_result.memory.hit:
-                self._dram_hits += 1
+                self.record_memory_hit()
                 continue
 
-            self._dram_misses += 1
             storage_result = block_result.storage
             if storage_result is None:
                 raise ValueError("DRAM miss must include a storage result")
+            self.record_memory_miss(storage_result, block_result.admission)
 
-            if storage_result.source_tier is StorageTier.TLC:
-                self._tlc_accesses += 1
-            else:
-                self._qlc_accesses += 1
+    def record_query_start(self, query: Query) -> None:
+        """Record one query without retaining it."""
 
-            if storage_result.placement_rejected:
+        del query
+        self._query_count += 1
+
+    def record_memory_hit(self) -> None:
+        """Record one DRAM hit."""
+
+        self._block_access_count += 1
+        self._dram_hits += 1
+
+    def record_memory_miss(
+        self,
+        storage_result: StorageAccessResult,
+        admission_result: MemAdmissionResult | None,
+    ) -> None:
+        """Record one DRAM miss and all I/O caused by it."""
+
+        self._block_access_count += 1
+        self._dram_misses += 1
+        if storage_result.source_tier is StorageTier.TLC:
+            self._tlc_accesses += 1
+        else:
+            self._qlc_accesses += 1
+
+        if storage_result.placement_rejected:
+            self._placement_rejections += 1
+
+        if admission_result is not None and admission_result.evicted_block is not None:
+            self._dram_evictions += 1
+
+        if admission_result is not None and admission_result.writeback is not None:
+            if admission_result.writeback.placement_rejected:
                 self._placement_rejections += 1
+            self._record_io_events(admission_result.writeback.io_events)
 
-            admission_result = block_result.admission
-            if admission_result is not None and admission_result.evicted_block is not None:
-                self._dram_evictions += 1
-
-            if admission_result is not None and admission_result.writeback is not None:
-                if admission_result.writeback.placement_rejected:
-                    self._placement_rejections += 1
-                self._record_io_events(admission_result.writeback.io_events)
-
-            self._record_io_events(storage_result.io_events)
+        self._record_io_events(storage_result.io_events)
 
     def _record_io_events(self, events: Iterable[IOEvent]) -> None:
         for event in events:

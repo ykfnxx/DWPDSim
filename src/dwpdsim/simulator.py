@@ -64,21 +64,24 @@ class DWPDSimulator:
     def process_query(self, query: Query) -> MemQueryResult:
         """Process and record one query, enforcing timestamp order."""
 
-        if self._last_timestamp is not None and query.timestamp < self._last_timestamp:
-            raise OutOfOrderQueryError(
-                f"query timestamp {query.timestamp} precedes {self._last_timestamp}"
-            )
-
+        self._validate_timestamp(query)
         result = self.memory.process_query(query)
         self.metrics.record_query(result)
         self._last_timestamp = query.timestamp
         return result
 
     def run(self, queries: Iterable[Query]) -> SimulationReport:
-        """Process an iterable of queries and return the cumulative report."""
+        """Process queries with aggregate metrics and return the cumulative report.
+
+        Unlike :meth:`process_query`, this path does not build a
+        ``MemQueryResult``/``BlockAccessResult`` tree and is intended for large
+        streaming traces.
+        """
 
         for query in queries:
-            self.process_query(query)
+            self._validate_timestamp(query)
+            self.memory.process_query_into(query, self.metrics)
+            self._last_timestamp = query.timestamp
         return self.report()
 
     def report(self) -> SimulationReport:
@@ -108,3 +111,9 @@ class DWPDSimulator:
                 eviction_count=0,
             ),
         )
+
+    def _validate_timestamp(self, query: Query) -> None:
+        if self._last_timestamp is not None and query.timestamp < self._last_timestamp:
+            raise OutOfOrderQueryError(
+                f"query timestamp {query.timestamp} precedes {self._last_timestamp}"
+            )

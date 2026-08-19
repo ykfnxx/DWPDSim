@@ -66,3 +66,46 @@ def test_simulator_rejects_decreasing_timestamps() -> None:
 
     with pytest.raises(OutOfOrderQueryError):
         simulator.process_query(Query(timestamp=9, block_ids=(1,)))
+
+
+def test_aggregate_run_matches_detailed_query_processing() -> None:
+    config = SimulationConfig(
+        block_size_bytes=4096,
+        dram=TierConfig(2),
+        tlc=TierConfig(2),
+        qlc=TierConfig(6),
+    )
+    queries = (
+        Query(timestamp=10, block_ids=(1, 2, 1)),
+        Query(timestamp=20, block_ids=(3, 4, 2)),
+        Query(timestamp=30, block_ids=(5, 1, 6)),
+    )
+    detailed = DWPDSimulator.from_config(config, initial_blocks=range(1, 7))
+    aggregate = DWPDSimulator.from_config(config, initial_blocks=range(1, 7))
+
+    for query in queries:
+        detailed.process_query(query)
+    aggregate_report = aggregate.run(iter(queries))
+
+    assert aggregate_report == detailed.report()
+    assert aggregate.memory.resident_blocks == detailed.memory.resident_blocks
+    assert aggregate.storage.blocks_in_tier(StorageTier.TLC) == detailed.storage.blocks_in_tier(
+        StorageTier.TLC
+    )
+    assert aggregate.storage.blocks_in_tier(StorageTier.QLC) == detailed.storage.blocks_in_tier(
+        StorageTier.QLC
+    )
+
+
+def test_run_does_not_build_detailed_query_results(monkeypatch: pytest.MonkeyPatch) -> None:
+    simulator = DWPDSimulator.from_config(make_config(), initial_blocks=(1, 2))
+
+    def fail_if_called(query: Query) -> None:
+        raise AssertionError(f"detailed processing unexpectedly called for {query}")
+
+    monkeypatch.setattr(simulator.memory, "process_query", fail_if_called)
+
+    report = simulator.run(Query(timestamp=index, block_ids=(1,)) for index in range(3))
+
+    assert report.metrics.query_count == 3
+    assert report.metrics.block_access_count == 3

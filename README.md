@@ -73,6 +73,38 @@ Run the complete example after installing the package:
 python example/basic_simulation.py
 ```
 
+## Large traces
+
+`DWPDSimulator.run()` consumes any iterable lazily and updates aggregate metrics
+without building a `MemQueryResult`/`BlockAccessResult` tree for every query. Pass
+a generator or streaming file reader for a large trace instead of first building
+a list of all queries:
+
+```python
+def read_queries(path):
+    with open(path) as trace:
+        for timestamp, line in enumerate(trace):
+            yield Query(
+                timestamp=timestamp,
+                block_ids=tuple(map(int, line.split())),
+            )
+
+
+report = simulator.run(read_queries("queries.txt"))
+```
+
+Use `process_query()` when a policy test or debugger needs the full block-level
+result for one query. For a quick synthetic throughput comparison between the
+aggregate and detailed paths, run:
+
+```bash
+python benchmark/benchmark_simulator.py --queries 2000000 --mode aggregate
+python benchmark/benchmark_simulator.py --queries 100000 --mode detailed
+```
+
+Both modes preserve the same sequential cache semantics and produce equivalent
+aggregate reports.
+
 ## Replaceable policies
 
 The built-in policies are:

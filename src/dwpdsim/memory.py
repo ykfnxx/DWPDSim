@@ -2,7 +2,7 @@
 
 from dwpdsim.config import TierConfig
 from dwpdsim.errors import InvalidPolicyDecisionError
-from dwpdsim.interfaces import BlockStorage
+from dwpdsim.interfaces import AggregateMetricsSink, BlockStorage
 from dwpdsim.models import (
     AccessContext,
     BlockAccessResult,
@@ -58,7 +58,7 @@ class MemManager:
         return frozenset(self._blocks)
 
     def process_query(self, query: Query) -> MemQueryResult:
-        """Process every block in a query sequentially."""
+        """Process a query and retain detailed results for every block."""
 
         block_results: list[BlockAccessResult] = []
         for block_index in range(len(query.block_ids)):
@@ -93,12 +93,30 @@ class MemManager:
 
         return MemQueryResult(query=query, block_results=tuple(block_results))
 
+    def process_query_into(self, query: Query, sink: AggregateMetricsSink) -> None:
+        """Process a query while streaming outcomes into an aggregate sink."""
+
+        sink.record_query_start(query)
+        for block_index in range(len(query.block_ids)):
+            context = AccessContext.from_query(query, block_index)
+            if self._access_is_hit(context):
+                sink.record_memory_hit()
+                continue
+
+            storage_result = self._lower_storage.load_block(context)
+            if self._admission_policy.should_admit(context, storage_result):
+                admission_result = self.admit_block(context)
+            else:
+                admission_result = MemAdmissionResult(
+                    block_id=context.block_id,
+                    admitted=False,
+                )
+            sink.record_memory_miss(storage_result, admission_result)
+
     def access_block(self, context: AccessContext) -> MemAccessResult:
         """Look up one block and update replacement metadata on a hit."""
 
-        is_hit = context.block_id in self._blocks
-        if is_hit:
-            self._cache_policy.on_hit(context)
+        is_hit = self._access_is_hit(context)
         return MemAccessResult(block_id=context.block_id, hit=is_hit)
 
     def admit_block(self, context: AccessContext) -> MemAdmissionResult:
@@ -142,3 +160,9 @@ class MemManager:
             raise InvalidPolicyDecisionError(
                 f"MemCachePolicy selected non-resident DRAM block: {block_id}"
             )
+
+    def _access_is_hit(self, context: AccessContext) -> bool:
+        is_hit = context.block_id in self._blocks
+        if is_hit:
+            self._cache_policy.on_hit(context)
+        return is_hit
