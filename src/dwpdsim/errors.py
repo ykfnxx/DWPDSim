@@ -6,7 +6,7 @@ class DWPDSimError(Exception):
 
 
 class BlockNotFoundError(DWPDSimError):
-    """Raised when a query references a block absent from storage."""
+    """Raised when a direct storage lookup references an absent block."""
 
 
 class StorageCapacityError(DWPDSimError):

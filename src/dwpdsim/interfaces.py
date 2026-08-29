@@ -4,6 +4,7 @@ from typing import Protocol
 
 from dwpdsim.models import (
     AccessContext,
+    BlockId,
     MemAdmissionResult,
     Query,
     StorageAccessResult,
@@ -13,6 +14,9 @@ from dwpdsim.models import (
 
 class BlockStorage(Protocol):
     """A lower hierarchy level capable of loading and writing one block."""
+
+    def contains_block(self, block_id: BlockId) -> bool:
+        """Return whether a block exists in persistent storage."""
 
     def load_block(self, context: AccessContext) -> StorageAccessResult:
         """Load a block and return all storage-side effects."""
@@ -32,10 +36,12 @@ class AggregateMetricsSink(Protocol):
 
     def record_memory_miss(
         self,
-        storage_result: StorageAccessResult,
+        storage_result: StorageAccessResult | None,
         admission_result: MemAdmissionResult | None,
+        *,
+        inserted_on_storage_miss: bool = False,
     ) -> None:
-        """Record one DRAM miss and its lower-level side effects."""
+        """Record one DRAM miss, including a storage-miss insertion."""
 
 
 BlockLoader = BlockStorage

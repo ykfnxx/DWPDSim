@@ -73,6 +73,18 @@ class MemManager:
                 )
                 continue
 
+            if not self._lower_storage.contains_block(context.block_id):
+                admission_result = self.admit_block(context)
+                block_results.append(
+                    BlockAccessResult(
+                        block_id=context.block_id,
+                        memory=memory_result,
+                        admission=admission_result,
+                        inserted_on_storage_miss=True,
+                    )
+                )
+                continue
+
             storage_result = self._lower_storage.load_block(context)
             if self._admission_policy.should_admit(context, storage_result):
                 admission_result = self.admit_block(context)
@@ -101,6 +113,15 @@ class MemManager:
             context = AccessContext.from_query(query, block_index)
             if self._access_is_hit(context):
                 sink.record_memory_hit()
+                continue
+
+            if not self._lower_storage.contains_block(context.block_id):
+                admission_result = self.admit_block(context)
+                sink.record_memory_miss(
+                    None,
+                    admission_result,
+                    inserted_on_storage_miss=True,
+                )
                 continue
 
             storage_result = self._lower_storage.load_block(context)

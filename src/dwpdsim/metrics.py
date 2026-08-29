@@ -41,6 +41,7 @@ class SimulationMetrics:
     dram_evictions: int
     placement_rejections: int
     io_counts: tuple[IOCount, ...]
+    block_insertions: int = 0
 
     @property
     def dram_hit_rate(self) -> float:
@@ -104,6 +105,7 @@ class MetricsCollector:
         self._block_size_bytes = block_size_bytes
         self._query_count = 0
         self._block_access_count = 0
+        self._block_insertions = 0
         self._dram_hits = 0
         self._dram_misses = 0
         self._tlc_accesses = 0
@@ -123,9 +125,11 @@ class MetricsCollector:
                 continue
 
             storage_result = block_result.storage
-            if storage_result is None:
-                raise ValueError("DRAM miss must include a storage result")
-            self.record_memory_miss(storage_result, block_result.admission)
+            self.record_memory_miss(
+                storage_result,
+                block_result.admission,
+                inserted_on_storage_miss=block_result.inserted_on_storage_miss,
+            )
 
     def record_query_start(self, query: Query) -> None:
         """Record one query without retaining it."""
@@ -141,19 +145,30 @@ class MetricsCollector:
 
     def record_memory_miss(
         self,
-        storage_result: StorageAccessResult,
+        storage_result: StorageAccessResult | None,
         admission_result: MemAdmissionResult | None,
+        *,
+        inserted_on_storage_miss: bool = False,
     ) -> None:
-        """Record one DRAM miss and all I/O caused by it."""
+        """Record one DRAM miss and all load or insertion side effects."""
+
+        if inserted_on_storage_miss and storage_result is not None:
+            raise ValueError("inserted block must not include a storage result")
+        if not inserted_on_storage_miss and storage_result is None:
+            raise ValueError("non-inserted DRAM miss must include a storage result")
 
         self._block_access_count += 1
         self._dram_misses += 1
-        if storage_result.source_tier is StorageTier.TLC:
-            self._tlc_accesses += 1
+        if inserted_on_storage_miss:
+            self._block_insertions += 1
         else:
-            self._qlc_accesses += 1
+            assert storage_result is not None
+            if storage_result.source_tier is StorageTier.TLC:
+                self._tlc_accesses += 1
+            else:
+                self._qlc_accesses += 1
 
-        if storage_result.placement_rejected:
+        if storage_result is not None and storage_result.placement_rejected:
             self._placement_rejections += 1
 
         if admission_result is not None and admission_result.evicted_block is not None:
@@ -164,7 +179,8 @@ class MetricsCollector:
                 self._placement_rejections += 1
             self._record_io_events(admission_result.writeback.io_events)
 
-        self._record_io_events(storage_result.io_events)
+        if storage_result is not None:
+            self._record_io_events(storage_result.io_events)
 
     def _record_io_events(self, events: Iterable[IOEvent]) -> None:
         for event in events:
@@ -192,6 +208,7 @@ class MetricsCollector:
         return SimulationMetrics(
             query_count=self._query_count,
             block_access_count=self._block_access_count,
+            block_insertions=self._block_insertions,
             dram_hits=self._dram_hits,
             dram_misses=self._dram_misses,
             tlc_accesses=self._tlc_accesses,

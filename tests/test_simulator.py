@@ -26,6 +26,7 @@ def test_simulator_reports_hit_rates_io_and_capacity() -> None:
 
     assert report.metrics.query_count == 1
     assert report.metrics.block_access_count == 3
+    assert report.metrics.block_insertions == 0
     assert report.metrics.dram_hits == 1
     assert report.metrics.dram_misses == 2
     assert report.metrics.dram_hit_rate == pytest.approx(1 / 3)
@@ -109,3 +110,38 @@ def test_run_does_not_build_detailed_query_results(monkeypatch: pytest.MonkeyPat
 
     assert report.metrics.query_count == 3
     assert report.metrics.block_access_count == 3
+
+
+def test_aggregate_run_counts_storage_miss_insertions_without_storage_reads() -> None:
+    config = SimulationConfig(
+        block_size_bytes=4096,
+        dram=TierConfig(1),
+        tlc=TierConfig(2),
+        qlc=TierConfig(4),
+    )
+    queries = (
+        Query(timestamp=10, block_ids=(10, 10)),
+        Query(timestamp=20, block_ids=(20,)),
+    )
+    detailed = DWPDSimulator.from_config(config)
+    aggregate = DWPDSimulator.from_config(config)
+
+    for query in queries:
+        detailed.process_query(query)
+    aggregate_report = aggregate.run(iter(queries))
+
+    assert aggregate_report == detailed.report()
+    assert aggregate_report.metrics.block_access_count == 3
+    assert aggregate_report.metrics.block_insertions == 2
+    assert aggregate_report.metrics.dram_hits == 1
+    assert aggregate_report.metrics.dram_misses == 2
+    assert aggregate_report.metrics.tlc_accesses == 0
+    assert aggregate_report.metrics.qlc_accesses == 0
+    assert (
+        aggregate_report.metrics.io_operations(
+            StorageTier.TLC,
+            IOOperation.WRITE,
+            IOReason.WRITEBACK,
+        )
+        == 1
+    )

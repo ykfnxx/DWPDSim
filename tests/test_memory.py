@@ -30,6 +30,17 @@ class LowestBlockIdMemCachePolicy:
         self._blocks.clear()
 
 
+class NeverAdmitPolicy:
+    """Reject storage-loaded blocks so the storage-miss path can be isolated."""
+
+    def should_admit(self, context: AccessContext, storage_result: object) -> bool:
+        del context, storage_result
+        return False
+
+    def reset(self) -> None:
+        return None
+
+
 def make_storage() -> StorageManager:
     return StorageManager(
         tlc_config=TierConfig(2),
@@ -118,3 +129,68 @@ def test_mem_cache_policy_does_not_require_storage_overwrite_interface() -> None
     memory.process_query(Query(timestamp=1, block_ids=(1, 2)))
 
     assert memory.resident_blocks == frozenset((2,))
+
+
+def test_storage_miss_inserts_block_directly_into_dram() -> None:
+    storage = make_storage()
+    memory = MemManager(
+        config=TierConfig(2),
+        lower_storage=storage,
+        mem_cache_policy=LRUPolicy(),
+    )
+
+    result = memory.process_query(Query(timestamp=1, block_ids=(99, 99)))
+
+    assert [item.memory.hit for item in result.block_results] == [False, True]
+    assert result.block_results[0].storage is None
+    assert result.block_results[0].inserted_on_storage_miss is True
+    assert result.block_results[0].admission is not None
+    assert result.block_results[0].admission.admitted is True
+    assert result.block_results[1].inserted_on_storage_miss is False
+    assert result.insertions == 1
+    assert memory.resident_blocks == frozenset((99,))
+    assert storage.contains_block(99) is False
+
+
+def test_inserted_block_reaches_storage_only_after_dram_writeback() -> None:
+    storage = StorageManager(
+        tlc_config=TierConfig(2),
+        qlc_config=TierConfig(10),
+        placement_policy=AlwaysQLCPolicy(),
+    )
+    memory = MemManager(
+        config=TierConfig(1),
+        lower_storage=storage,
+        mem_cache_policy=LRUPolicy(write_back_on_remove=True),
+    )
+
+    result = memory.process_query(Query(timestamp=1, block_ids=(99, 100)))
+
+    assert result.insertions == 2
+    first_admission = result.block_results[0].admission
+    second_admission = result.block_results[1].admission
+    assert first_admission is not None and first_admission.writeback is None
+    assert second_admission is not None and second_admission.writeback is not None
+    assert [
+        (event.tier, event.operation, event.reason, event.block_id)
+        for event in second_admission.writeback.io_events
+    ] == [(StorageTier.QLC, IOOperation.WRITE, IOReason.WRITEBACK, 99)]
+    assert storage.tier_of(99) is StorageTier.QLC
+    assert storage.contains_block(100) is False
+
+
+def test_storage_miss_insertion_bypasses_loaded_block_admission_policy() -> None:
+    memory = MemManager(
+        config=TierConfig(2),
+        lower_storage=make_storage(),
+        admission_policy=NeverAdmitPolicy(),
+    )
+
+    result = memory.process_query(Query(timestamp=1, block_ids=(1, 99)))
+
+    loaded_admission = result.block_results[0].admission
+    inserted_admission = result.block_results[1].admission
+    assert loaded_admission is not None and loaded_admission.admitted is False
+    assert inserted_admission is not None and inserted_admission.admitted is True
+    assert result.block_results[1].inserted_on_storage_miss is True
+    assert memory.resident_blocks == frozenset((99,))

@@ -93,6 +93,11 @@ class StorageManager:
 
         return frozenset(self._blocks_for_tier(tier))
 
+    def contains_block(self, block_id: BlockId) -> bool:
+        """Return whether a block currently exists in TLC or QLC."""
+
+        return block_id in self._locations
+
     def tier_of(self, block_id: BlockId) -> StorageTier:
         """Return the current storage tier for a block."""
 

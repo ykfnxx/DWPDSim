@@ -9,10 +9,15 @@ sequences and reports cache hit rates and I/O activity at each tier.
 - Every query is processed in timestamp order.
 - Blocks within a query are processed sequentially and admitted to DRAM
   immediately, so a repeated block can hit later in the same query.
+- On a DRAM miss, DWPDSim queries TLC/QLC. If the block is absent from storage,
+  it is inserted directly into DRAM and counted in `block_insertions`.
+- A newly inserted block does not produce storage I/O immediately. It reaches
+  TLC/QLC only if a later DRAM eviction requests write-back.
 - TLC and QLC use exclusive placement: each persistent block resides in exactly
   one storage tier. DRAM may hold a cached copy.
-- Initial blocks are seeded without simulated I/O. Referencing an unseeded block
-  raises `BlockNotFoundError`.
+- Initial blocks are seeded without simulated I/O. Direct `StorageManager`
+  lookups still raise `BlockNotFoundError`; the simulator converts that storage
+  miss into the DRAM insertion described above.
 - DRAM, TLC, and QLC capacities are hard limits measured in fixed-size blocks.
 - Managers own state and enforce capacities. Injected policies only make
   admission, replacement, and placement decisions.
@@ -42,7 +47,7 @@ config = SimulationConfig(
 
 simulator = DWPDSimulator.from_config(
     config,
-    initial_blocks=(1, 2, 3, 4),
+    initial_blocks=(1, 2, 3),
     memory_cache_policy=LRUPolicy(),
     storage_placement_policy=FrequencyPlacementPolicy(tlc_threshold=2),
     storage_cache_policy=LRUPolicy(),
@@ -56,6 +61,7 @@ report = simulator.run(
 )
 
 print(report.metrics.dram_hit_rate)
+print(report.metrics.block_insertions)
 print(report.metrics.tlc_hit_rate_on_dram_miss)
 print(report.metrics.qlc_hit_rate_on_dram_miss)
 print(report.metrics.io_counts)

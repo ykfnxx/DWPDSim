@@ -181,6 +181,7 @@ class BlockAccessResult:
     memory: MemAccessResult
     storage: StorageAccessResult | None = None
     admission: MemAdmissionResult | None = None
+    inserted_on_storage_miss: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -197,3 +198,9 @@ class MemQueryResult:
     @property
     def memory_misses(self) -> int:
         return len(self.block_results) - self.memory_hits
+
+    @property
+    def insertions(self) -> int:
+        """Count blocks inserted directly into DRAM after a storage miss."""
+
+        return sum(result.inserted_on_storage_miss for result in self.block_results)
