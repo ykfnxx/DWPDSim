@@ -1,206 +1,165 @@
-"""Core immutable data models shared across simulator components."""
+"""Small immutable data objects shared by simulator components."""
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import Enum
 from typing import TypeAlias
 
 BlockId: TypeAlias = int
-Timestamp: TypeAlias = int
+Timestamp: TypeAlias = int | float
 
 
-class StorageTier(str, Enum):
-    """Persistent storage tiers modeled by DWPDSim."""
+class Medium(str, Enum):
+    """Persistent SSD media modeled by the simulator."""
 
+    SLC = "slc"
     TLC = "tlc"
-    QLC = "qlc"
 
 
-class IOOperation(str, Enum):
-    """Physical I/O operation type."""
+class ChunkState(str, Enum):
+    """Lifecycle state of one SSD chunk."""
 
-    READ = "read"
-    WRITE = "write"
-
-
-class IOReason(str, Enum):
-    """Reason a physical I/O operation occurred."""
-
-    DEMAND = "demand"
-    PROMOTION = "promotion"
-    DEMOTION = "demotion"
-    WRITEBACK = "writeback"
+    FREE = "free"
+    ACTIVE = "active"
+    SEALED = "sealed"
 
 
-class StorageRequestType(str, Enum):
-    """Logical request that caused a storage placement decision."""
+class AccessResult(str, Enum):
+    """Final lookup outcome for one input position."""
 
-    READ = "read"
-    WRITEBACK = "writeback"
+    DRAM_HIT = "dram_hit"
+    SLC_HIT = "slc_hit"
+    TLC_HIT = "tlc_hit"
+    GLOBAL_MISS = "global_miss"
 
 
 @dataclass(frozen=True, slots=True)
 class Query:
-    """One timestamped, ordered sequence of block accesses."""
+    """One timestamped, ordered sequence of block hashes."""
 
     timestamp: Timestamp
-    block_ids: tuple[BlockId, ...]
-    query_id: str | None = None
+    hash_ids: tuple[BlockId, ...]
+    other_info: object | None = None
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "block_ids", tuple(self.block_ids))
+        object.__setattr__(self, "hash_ids", tuple(self.hash_ids))
+
+
+@dataclass(frozen=True, slots=True)
+class BlockHistory:
+    """Read-only access history for one block."""
+
+    first_seen_timestamp: Timestamp
+    last_seen_timestamp: Timestamp
+    access_count: int
+
+
+@dataclass(frozen=True, slots=True)
+class SequenceNodeView:
+    """Read-only view of one forward-prefix node."""
+
+    node_id: int
+    parent_id: int | None
+    block_id: BlockId | None
+    depth: int
+    access_count: int
 
 
 @dataclass(frozen=True, slots=True)
 class AccessContext:
-    """Policy context for one block access within a query."""
+    """Sequence context for one input position."""
 
+    query: Query
+    position: int
     block_id: BlockId
-    timestamp: Timestamp
-    ttl: int | None = None
-    query: Query | None = None
-    block_index: int | None = None
-
-    @classmethod
-    def from_query(
-        cls,
-        query: Query,
-        block_index: int,
-        ttl: int | None = None,
-    ) -> AccessContext:
-        if block_index < 0:
-            raise ValueError(f"block_index out of range: {block_index}")
-        try:
-            block_id = query.block_ids[block_index]
-        except IndexError as error:
-            raise ValueError(f"block_index out of range: {block_index}") from error
-        return cls(
-            block_id=block_id,
-            timestamp=query.timestamp,
-            ttl=ttl,
-            query=query,
-            block_index=block_index,
-        )
-
-    @classmethod
-    def for_block(
-        cls,
-        block_id: BlockId,
-        timestamp: Timestamp = 0,
-        ttl: int | None = None,
-    ) -> AccessContext:
-        return cls(block_id=block_id, timestamp=timestamp, ttl=ttl)
+    history: BlockHistory | None
+    parent_node: SequenceNodeView
+    prefix_node: SequenceNodeView | None
 
 
 @dataclass(frozen=True, slots=True)
-class CapacitySnapshot:
-    """Read-only view of one tier's current capacity state."""
+class Placement:
+    """Persistent destination selected for one block."""
+
+    medium: Medium
+    stream_id: int
+
+
+@dataclass(frozen=True, slots=True)
+class PlacementContext:
+    """Context used to place a DRAM-evicted block."""
+
+    block_id: BlockId
+    history: BlockHistory | None
+    trigger: AccessContext
+
+
+@dataclass(frozen=True, slots=True)
+class DramBlockView:
+    """Read-only DRAM metadata for one resident block."""
+
+    block_id: BlockId
+    insert_order: int
+    last_access_order: int
+
+
+@dataclass(frozen=True, slots=True)
+class DramView:
+    """Read-only view of current DRAM state."""
 
     capacity_blocks: int
-    used_blocks: int
+    blocks: Mapping[BlockId, DramBlockView]
+
+    @property
+    def used_blocks(self) -> int:
+        return len(self.blocks)
 
     @property
     def free_blocks(self) -> int:
         return self.capacity_blocks - self.used_blocks
 
-    @property
-    def is_full(self) -> bool:
-        return self.used_blocks >= self.capacity_blocks
-
-    @property
-    def utilization(self) -> float:
-        return self.used_blocks / self.capacity_blocks
-
 
 @dataclass(frozen=True, slots=True)
-class IOEvent:
-    """One physical I/O event emitted by storage."""
-
-    tier: StorageTier
-    operation: IOOperation
-    reason: IOReason
-    block_id: BlockId
-    timestamp: Timestamp
-    block_count: int = 1
-
-    def __post_init__(self) -> None:
-        if self.block_count <= 0:
-            raise ValueError("block_count must be positive")
-
-
-@dataclass(frozen=True, slots=True)
-class MemAccessResult:
-    """Result of looking up one block in DRAM."""
+class StorageBlockView:
+    """Read-only persistent metadata for one block."""
 
     block_id: BlockId
-    hit: bool
+    medium: Medium
+    stream_id: int
+    insert_order: int
+    last_access_order: int
 
 
 @dataclass(frozen=True, slots=True)
-class MemAdmissionResult:
-    """Result of attempting to admit one block into DRAM."""
+class MediumView:
+    """Read-only capacity and stream state for one SSD medium."""
 
-    block_id: BlockId
-    admitted: bool
-    evicted_block: BlockId | None = None
-    writeback: StorageWriteResult | None = None
-
-
-@dataclass(frozen=True, slots=True)
-class StorageAccessResult:
-    """Storage lookup, placement decision, and resulting physical I/O."""
-
-    block_id: BlockId
-    source_tier: StorageTier
-    requested_tier: StorageTier
-    final_tier: StorageTier
-    decision_reason: str
-    placement_rejected: bool
-    io_events: tuple[IOEvent, ...]
-
-
-@dataclass(frozen=True, slots=True)
-class StorageWriteResult:
-    """Result of writing a DRAM-evicted block into persistent storage."""
-
-    block_id: BlockId
-    source_tier: StorageTier | None
-    requested_tier: StorageTier
-    final_tier: StorageTier
-    decision_reason: str
-    placement_rejected: bool
-    io_events: tuple[IOEvent, ...]
-
-
-@dataclass(frozen=True, slots=True)
-class BlockAccessResult:
-    """Complete result for one block in a query."""
-
-    block_id: BlockId
-    memory: MemAccessResult
-    storage: StorageAccessResult | None = None
-    admission: MemAdmissionResult | None = None
-    inserted_on_storage_miss: bool = False
-
-
-@dataclass(frozen=True, slots=True)
-class MemQueryResult:
-    """Ordered block-level outcomes for one query."""
-
-    query: Query
-    block_results: tuple[BlockAccessResult, ...]
+    medium: Medium
+    capacity_blocks: int
+    used_blocks: int
+    stream_free_slots: tuple[int, ...]
 
     @property
-    def memory_hits(self) -> int:
-        return sum(result.memory.hit for result in self.block_results)
+    def free_blocks(self) -> int:
+        return self.capacity_blocks - self.used_blocks
 
-    @property
-    def memory_misses(self) -> int:
-        return len(self.block_results) - self.memory_hits
 
-    @property
-    def insertions(self) -> int:
-        """Count blocks inserted directly into DRAM after a storage miss."""
+@dataclass(frozen=True, slots=True)
+class StorageView:
+    """Read-only state of the two persistent media."""
 
-        return sum(result.inserted_on_storage_miss for result in self.block_results)
+    slc: MediumView
+    tlc: MediumView
+
+
+@dataclass(frozen=True, slots=True)
+class ChunkView:
+    """Read-only logical contents of one SSD chunk."""
+
+    chunk_id: int
+    state: ChunkState
+    stream_id: int | None
+    slots: tuple[BlockId | None, ...]
+    erase_count: int = 0

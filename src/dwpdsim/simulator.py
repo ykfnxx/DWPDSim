@@ -1,116 +1,145 @@
-"""Top-level DWPDSim orchestration API."""
+"""Fixed DRAM then storage access flow."""
+
+from __future__ import annotations
 
 from collections.abc import Iterable
+from pathlib import Path
+from typing import Any
 
 from dwpdsim.config import SimulationConfig
 from dwpdsim.errors import OutOfOrderQueryError
-from dwpdsim.memory import MemManager
-from dwpdsim.metrics import MetricsCollector, SimulationReport, TierUsage
-from dwpdsim.models import BlockId, MemQueryResult, Query
-from dwpdsim.policies.base import (
-    AdmissionPolicy,
-    MemCachePolicy,
-    PlacementPolicy,
-    StorageCachePolicy,
+from dwpdsim.managers import DRAMManager, StorageManager
+from dwpdsim.metrics import MetricsCollector
+from dwpdsim.models import (
+    AccessContext,
+    AccessResult,
+    Medium,
+    PlacementContext,
+    Query,
 )
-from dwpdsim.storage import StorageManager
+from dwpdsim.policies.dram import DramPolicy
+from dwpdsim.policies.gc import GCPolicy
+from dwpdsim.policies.placement import PlacementPolicy
+from dwpdsim.policies.storage_eviction import StorageEvictionPolicy
+from dwpdsim.sequence import ROOT_NODE, SequenceIndex
 
 
 class DWPDSimulator:
-    """Processes ordered queries and exposes cumulative simulation reports."""
+    """Process every hash ID in order with one fixed lookup flow."""
 
     def __init__(
         self,
-        memory: MemManager,
+        config: SimulationConfig,
+        dram: DRAMManager,
         storage: StorageManager,
+        sequence: SequenceIndex,
         metrics: MetricsCollector,
     ) -> None:
-        self.memory = memory
+        self.config = config
+        self.dram = dram
         self.storage = storage
+        self.sequence = sequence
         self.metrics = metrics
-        self._last_timestamp: int | None = None
+        self._last_timestamp: int | float | None = None
 
     @classmethod
     def from_config(
         cls,
         config: SimulationConfig,
-        initial_blocks: Iterable[BlockId] = (),
-        memory_cache_policy: MemCachePolicy | None = None,
-        memory_admission_policy: AdmissionPolicy | None = None,
-        storage_placement_policy: PlacementPolicy | None = None,
-        storage_cache_policy: StorageCachePolicy | None = None,
-    ) -> "DWPDSimulator":
-        """Build a simulator with optional injected policies."""
-
+        *,
+        dram_policy: DramPolicy | None = None,
+        placement_policy: PlacementPolicy | None = None,
+        storage_eviction_policy: StorageEvictionPolicy | None = None,
+        slc_gc_policy: GCPolicy | None = None,
+        tlc_gc_policy: GCPolicy | None = None,
+    ) -> DWPDSimulator:
         storage = StorageManager(
-            tlc_config=config.tlc,
-            qlc_config=config.qlc,
-            placement_policy=storage_placement_policy,
-            storage_cache_policy=storage_cache_policy,
-            initial_blocks=initial_blocks,
-        )
-        memory = MemManager(
-            config=config.dram,
-            lower_storage=storage,
-            mem_cache_policy=memory_cache_policy,
-            admission_policy=memory_admission_policy,
+            config,
+            placement_policy=placement_policy,
+            eviction_policy=storage_eviction_policy,
+            slc_gc_policy=slc_gc_policy,
+            tlc_gc_policy=tlc_gc_policy,
         )
         return cls(
-            memory=memory,
+            config=config,
+            dram=DRAMManager(config.dram_capacity_blocks, dram_policy),
             storage=storage,
-            metrics=MetricsCollector(config.block_size_bytes),
+            sequence=SequenceIndex(),
+            metrics=MetricsCollector(config),
         )
 
-    def process_query(self, query: Query) -> MemQueryResult:
-        """Process and record one query, enforcing timestamp order."""
-
+    def process_query(self, query: Query) -> tuple[AccessResult, ...]:
         self._validate_timestamp(query)
-        result = self.memory.process_query(query)
-        self.metrics.record_query(result)
-        self._last_timestamp = query.timestamp
+        if not query.hash_ids:
+            self._last_timestamp = query.timestamp
+            self.metrics.record_query(query.timestamp)
+            return ()
+
+        parent_node_id = ROOT_NODE
+        results: list[AccessResult] = []
+        for position, block_id in enumerate(query.hash_ids):
+            prefix_node_id = self.sequence.existing_child(parent_node_id, block_id)
+            context = AccessContext(
+                query=query,
+                position=position,
+                block_id=block_id,
+                history=self.sequence.history(block_id),
+                parent_node=self.sequence.node(parent_node_id),
+                prefix_node=(
+                    self.sequence.node(prefix_node_id) if prefix_node_id is not None else None
+                ),
+            )
+            result = self._process_access(context)
+            if not results:
+                self._last_timestamp = query.timestamp
+                self.metrics.record_query(query.timestamp)
+            parent_node_id = self.sequence.observe(
+                block_id,
+                query.timestamp,
+                parent_node_id,
+            )
+            self.metrics.record_access(result)
+            results.append(result)
+        return tuple(results)
+
+    def run(self, queries: Iterable[Query]) -> dict[str, Any]:
+        for query in queries:
+            self.process_query(query)
+        return self.stats()
+
+    def stats(self) -> dict[str, Any]:
+        return self.metrics.snapshot(self.storage)
+
+    def write_stats(self, path: str | Path) -> None:
+        self.metrics.write_json(path, self.storage)
+
+    def _process_access(self, context: AccessContext) -> AccessResult:
+        if self.dram.access(context.block_id):
+            return AccessResult.DRAM_HIT
+
+        medium = self.storage.lookup(context.block_id)
+        if medium is None:
+            self._insert_into_dram(context)
+            return AccessResult.GLOBAL_MISS
+
+        result = AccessResult.SLC_HIT if medium is Medium.SLC else AccessResult.TLC_HIT
+        if self.dram.should_admit(context):
+            self._insert_into_dram(context)
+        if self.storage.contains(context.block_id):
+            self.storage.read(context.block_id)
         return result
 
-    def run(self, queries: Iterable[Query]) -> SimulationReport:
-        """Process queries with aggregate metrics and return the cumulative report.
-
-        Unlike :meth:`process_query`, this path does not build a
-        ``MemQueryResult``/``BlockAccessResult`` tree and is intended for large
-        streaming traces.
-        """
-
-        for query in queries:
-            self._validate_timestamp(query)
-            self.memory.process_query_into(query, self.metrics)
-            self._last_timestamp = query.timestamp
-        return self.report()
-
-    def report(self) -> SimulationReport:
-        """Return current hit-rate, I/O, and capacity statistics."""
-
-        dram_capacity = self.memory.capacity
-        tlc_capacity = self.storage.tlc_capacity
-        qlc_capacity = self.storage.qlc_capacity
-        return SimulationReport(
-            metrics=self.metrics.snapshot(),
-            dram=TierUsage(
-                capacity_blocks=dram_capacity.capacity_blocks,
-                used_blocks=dram_capacity.used_blocks,
-                peak_used_blocks=self.memory.peak_used_blocks,
-                eviction_count=self.memory.eviction_count,
-            ),
-            tlc=TierUsage(
-                capacity_blocks=tlc_capacity.capacity_blocks,
-                used_blocks=tlc_capacity.used_blocks,
-                peak_used_blocks=self.storage.tlc_peak_used_blocks,
-                eviction_count=self.storage.tlc_eviction_count,
-            ),
-            qlc=TierUsage(
-                capacity_blocks=qlc_capacity.capacity_blocks,
-                used_blocks=qlc_capacity.used_blocks,
-                peak_used_blocks=self.storage.qlc_peak_used_blocks,
-                eviction_count=0,
-            ),
-        )
+    def _insert_into_dram(self, context: AccessContext) -> None:
+        victim = self.dram.victim_for(context)
+        if victim is not None and not self.storage.contains(victim):
+            self.storage.write_from_dram(
+                PlacementContext(
+                    block_id=victim,
+                    history=self.sequence.history(victim),
+                    trigger=context,
+                )
+            )
+        self.dram.insert(context.block_id, victim)
 
     def _validate_timestamp(self, query: Query) -> None:
         if self._last_timestamp is not None and query.timestamp < self._last_timestamp:

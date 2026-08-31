@@ -1,0 +1,32 @@
+{
+  "duration_seconds": 1343446.231,
+  "days": 15.549146192129628,
+  "capacity_bytes": {
+    "slc": 1073741824,
+    "tlc": 8589934592
+  },
+  "wa": {
+    "slc": 1.2,
+    "tlc": 2.0
+  },
+  "input_write_bytes": {
+    "dram_to_slc": 0,
+    "dram_to_tlc": 6573117440,
+    "slc_to_tlc": 0,
+    "tlc_to_slc": 0
+  },
+  "system_input_write_bytes": 6573117440,
+  "logical_write_bytes": {
+    "slc": 0,
+    "tlc": 6573117440
+  },
+  "estimated_physical_write_bytes": {
+    "slc": 0.0,
+    "tlc": 13146234880.0
+  },
+  "dwpd": {
+    "system_equivalent": 0.043744400152118,
+    "slc": 0.0,
+    "tlc": 0.0984249003422655
+  }
+}

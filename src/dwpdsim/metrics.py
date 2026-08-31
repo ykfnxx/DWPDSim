@@ -1,219 +1,130 @@
-"""Central aggregation of hit-rate, I/O, and capacity metrics."""
+"""Raw simulation statistics."""
 
-from collections import Counter
-from collections.abc import Iterable
-from dataclasses import dataclass
+from __future__ import annotations
 
-from dwpdsim.models import (
-    IOEvent,
-    IOOperation,
-    IOReason,
-    MemAdmissionResult,
-    MemQueryResult,
-    Query,
-    StorageAccessResult,
-    StorageTier,
-)
+import json
+from pathlib import Path
+from typing import Any
 
-
-@dataclass(frozen=True, slots=True)
-class IOCount:
-    """Aggregated physical I/O for one tier/operation/reason combination."""
-
-    tier: StorageTier
-    operation: IOOperation
-    reason: IOReason
-    operations: int
-    blocks: int
-    bytes: int
-
-
-@dataclass(frozen=True, slots=True)
-class SimulationMetrics:
-    """Immutable counter snapshot for a simulation."""
-
-    query_count: int
-    block_access_count: int
-    dram_hits: int
-    dram_misses: int
-    tlc_accesses: int
-    qlc_accesses: int
-    dram_evictions: int
-    placement_rejections: int
-    io_counts: tuple[IOCount, ...]
-    block_insertions: int = 0
-
-    @property
-    def dram_hit_rate(self) -> float:
-        return self.dram_hits / self.block_access_count if self.block_access_count else 0.0
-
-    @property
-    def tlc_hit_rate_on_dram_miss(self) -> float:
-        return self.tlc_accesses / self.dram_misses if self.dram_misses else 0.0
-
-    @property
-    def qlc_hit_rate_on_dram_miss(self) -> float:
-        return self.qlc_accesses / self.dram_misses if self.dram_misses else 0.0
-
-    def io_operations(
-        self,
-        tier: StorageTier,
-        operation: IOOperation,
-        reason: IOReason | None = None,
-    ) -> int:
-        """Return operation count, optionally filtered by I/O reason."""
-
-        return sum(
-            count.operations
-            for count in self.io_counts
-            if count.tier is tier
-            and count.operation is operation
-            and (reason is None or count.reason is reason)
-        )
-
-
-@dataclass(frozen=True, slots=True)
-class TierUsage:
-    """Capacity and eviction information for one hierarchy tier."""
-
-    capacity_blocks: int
-    used_blocks: int
-    peak_used_blocks: int
-    eviction_count: int
-
-    @property
-    def utilization(self) -> float:
-        return self.used_blocks / self.capacity_blocks
-
-
-@dataclass(frozen=True, slots=True)
-class SimulationReport:
-    """Final metrics and tier capacity states."""
-
-    metrics: SimulationMetrics
-    dram: TierUsage
-    tlc: TierUsage
-    qlc: TierUsage
+from dwpdsim.config import SimulationConfig
+from dwpdsim.managers.storage import StorageManager
+from dwpdsim.models import AccessResult, Medium, Timestamp
 
 
 class MetricsCollector:
-    """Accumulates structured query results without owning cache state."""
+    """Count only values directly produced by the simulation."""
 
-    def __init__(self, block_size_bytes: int) -> None:
-        if block_size_bytes <= 0:
-            raise ValueError("block_size_bytes must be positive")
-        self._block_size_bytes = block_size_bytes
-        self._query_count = 0
-        self._block_access_count = 0
-        self._block_insertions = 0
-        self._dram_hits = 0
-        self._dram_misses = 0
-        self._tlc_accesses = 0
-        self._qlc_accesses = 0
-        self._dram_evictions = 0
-        self._placement_rejections = 0
-        self._io_operations: Counter[tuple[StorageTier, IOOperation, IOReason]] = Counter()
-        self._io_blocks: Counter[tuple[StorageTier, IOOperation, IOReason]] = Counter()
+    def __init__(self, config: SimulationConfig) -> None:
+        self.config = config
+        self.query_count = 0
+        self.access_count = 0
+        self.dram_hits = 0
+        self.slc_hits = 0
+        self.tlc_hits = 0
+        self.global_misses = 0
+        self.start_timestamp: Timestamp | None = None
+        self.end_timestamp: Timestamp | None = None
 
-    def record_query(self, result: MemQueryResult) -> None:
-        """Record one completed query result."""
+    def record_query(self, timestamp: Timestamp) -> None:
+        self.query_count += 1
+        if self.start_timestamp is None:
+            self.start_timestamp = timestamp
+        self.end_timestamp = timestamp
 
-        self.record_query_start(result.query)
-        for block_result in result.block_results:
-            if block_result.memory.hit:
-                self.record_memory_hit()
-                continue
-
-            storage_result = block_result.storage
-            self.record_memory_miss(
-                storage_result,
-                block_result.admission,
-                inserted_on_storage_miss=block_result.inserted_on_storage_miss,
-            )
-
-    def record_query_start(self, query: Query) -> None:
-        """Record one query without retaining it."""
-
-        del query
-        self._query_count += 1
-
-    def record_memory_hit(self) -> None:
-        """Record one DRAM hit."""
-
-        self._block_access_count += 1
-        self._dram_hits += 1
-
-    def record_memory_miss(
-        self,
-        storage_result: StorageAccessResult | None,
-        admission_result: MemAdmissionResult | None,
-        *,
-        inserted_on_storage_miss: bool = False,
-    ) -> None:
-        """Record one DRAM miss and all load or insertion side effects."""
-
-        if inserted_on_storage_miss and storage_result is not None:
-            raise ValueError("inserted block must not include a storage result")
-        if not inserted_on_storage_miss and storage_result is None:
-            raise ValueError("non-inserted DRAM miss must include a storage result")
-
-        self._block_access_count += 1
-        self._dram_misses += 1
-        if inserted_on_storage_miss:
-            self._block_insertions += 1
+    def record_access(self, result: AccessResult) -> None:
+        self.access_count += 1
+        if result is AccessResult.DRAM_HIT:
+            self.dram_hits += 1
+        elif result is AccessResult.SLC_HIT:
+            self.slc_hits += 1
+        elif result is AccessResult.TLC_HIT:
+            self.tlc_hits += 1
         else:
-            assert storage_result is not None
-            if storage_result.source_tier is StorageTier.TLC:
-                self._tlc_accesses += 1
-            else:
-                self._qlc_accesses += 1
+            self.global_misses += 1
 
-        if storage_result is not None and storage_result.placement_rejected:
-            self._placement_rejections += 1
-
-        if admission_result is not None and admission_result.evicted_block is not None:
-            self._dram_evictions += 1
-
-        if admission_result is not None and admission_result.writeback is not None:
-            if admission_result.writeback.placement_rejected:
-                self._placement_rejections += 1
-            self._record_io_events(admission_result.writeback.io_events)
-
-        if storage_result is not None:
-            self._record_io_events(storage_result.io_events)
-
-    def _record_io_events(self, events: Iterable[IOEvent]) -> None:
-        for event in events:
-            key = (event.tier, event.operation, event.reason)
-            self._io_operations[key] += 1
-            self._io_blocks[key] += event.block_count
-
-    def snapshot(self) -> SimulationMetrics:
-        """Return an immutable metrics snapshot."""
-
-        io_counts = tuple(
-            IOCount(
-                tier=tier,
-                operation=operation,
-                reason=reason,
-                operations=self._io_operations[(tier, operation, reason)],
-                blocks=block_count,
-                bytes=block_count * self._block_size_bytes,
-            )
-            for (tier, operation, reason), block_count in sorted(
-                self._io_blocks.items(),
-                key=lambda item: tuple(value.value for value in item[0]),
-            )
+    def snapshot(self, storage: StorageManager) -> dict[str, Any]:
+        block_size = self.config.block_size_bytes
+        dram_misses = self.slc_hits + self.tlc_hits + self.global_misses
+        storage_hits = self.slc_hits + self.tlc_hits
+        all_hits = self.dram_hits + storage_hits
+        duration = (
+            self.end_timestamp - self.start_timestamp
+            if self.start_timestamp is not None and self.end_timestamp is not None
+            else 0
         )
-        return SimulationMetrics(
-            query_count=self._query_count,
-            block_access_count=self._block_access_count,
-            block_insertions=self._block_insertions,
-            dram_hits=self._dram_hits,
-            dram_misses=self._dram_misses,
-            tlc_accesses=self._tlc_accesses,
-            qlc_accesses=self._qlc_accesses,
-            dram_evictions=self._dram_evictions,
-            placement_rejections=self._placement_rejections,
-            io_counts=io_counts,
+
+        writes_from_dram = storage.writes_from_dram
+        transfers = storage.transfers
+        return {
+            "time": {
+                "unit": "seconds",
+                "start_timestamp": self.start_timestamp,
+                "end_timestamp": self.end_timestamp,
+                "duration_seconds": duration,
+            },
+            "configuration": {
+                "block_size_bytes": block_size,
+                "dram_capacity_bytes": self.config.dram_capacity_bytes,
+                "slc_capacity_bytes": self.config.slc.capacity_bytes,
+                "tlc_capacity_bytes": self.config.tlc.capacity_bytes,
+            },
+            "accesses": {
+                "queries": self.query_count,
+                "total": self.access_count,
+                "dram_hits": self.dram_hits,
+                "slc_hits": self.slc_hits,
+                "tlc_hits": self.tlc_hits,
+                "global_misses": self.global_misses,
+                "dram_hit_rate": self._rate(self.dram_hits, self.access_count),
+                "storage_hit_rate": self._rate(storage_hits, dram_misses),
+                "total_hit_rate": self._rate(all_hits, self.access_count),
+            },
+            "created": self._block_count(self.global_misses, block_size),
+            "writes_from_dram": {
+                "slc": self._block_count(writes_from_dram[Medium.SLC], block_size),
+                "tlc": self._block_count(writes_from_dram[Medium.TLC], block_size),
+            },
+            "transfers": {
+                "slc_to_tlc": self._block_count(transfers[(Medium.SLC, Medium.TLC)], block_size),
+                "tlc_to_slc": self._block_count(transfers[(Medium.TLC, Medium.SLC)], block_size),
+            },
+            "erases": {
+                "slc": {
+                    "direct": storage.slc.whole_erase_count,
+                    "non_full": storage.slc.non_full_erase_count,
+                },
+                "tlc": {
+                    "direct": storage.tlc.whole_erase_count,
+                    "non_full": storage.tlc.non_full_erase_count,
+                },
+            },
+            "stream_writes": {
+                "slc": self._stream_writes(storage.slc.logical_writes_by_stream, block_size),
+                "tlc": self._stream_writes(storage.tlc.logical_writes_by_stream, block_size),
+            },
+        }
+
+    def write_json(self, path: str | Path, storage: StorageManager) -> None:
+        Path(path).write_text(
+            json.dumps(self.snapshot(storage), indent=2) + "\n",
+            encoding="utf-8",
         )
+
+    @staticmethod
+    def _rate(numerator: int, denominator: int) -> float:
+        return numerator / denominator if denominator else 0.0
+
+    @staticmethod
+    def _block_count(blocks: int, block_size: int) -> dict[str, int]:
+        return {"blocks": blocks, "bytes": blocks * block_size}
+
+    @classmethod
+    def _stream_writes(
+        cls,
+        counts: tuple[int, ...],
+        block_size: int,
+    ) -> dict[str, dict[str, int]]:
+        return {
+            str(stream_id): cls._block_count(blocks, block_size)
+            for stream_id, blocks in enumerate(counts)
+        }

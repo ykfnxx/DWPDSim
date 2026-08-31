@@ -6,15 +6,15 @@ class DWPDSimError(Exception):
 
 
 class BlockNotFoundError(DWPDSimError):
-    """Raised when a direct storage lookup references an absent block."""
+    """Raised when an operation requires a missing block."""
 
 
 class StorageCapacityError(DWPDSimError):
-    """Raised when authoritative storage cannot hold another block."""
+    """Raised when persistent storage cannot complete an operation."""
 
 
 class InvalidPolicyDecisionError(DWPDSimError):
-    """Raised when a policy returns a decision the manager cannot execute."""
+    """Raised when a manager cannot execute a policy decision."""
 
 
 class OutOfOrderQueryError(DWPDSimError):

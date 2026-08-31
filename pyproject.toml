@@ -4,8 +4,8 @@ build-backend = "hatchling.build"
 
 [project]
 name = "dwpdsim"
-version = "0.1.0"
-description = "A simulator for DRAM, TLC, and QLC storage hierarchies."
+version = "0.2.0"
+description = "A policy-driven block simulator for DRAM and peer SLC/TLC SSD media."
 readme = "README.md"
 requires-python = ">=3.11"
 license = "MIT"

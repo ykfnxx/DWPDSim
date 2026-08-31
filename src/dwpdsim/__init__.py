@@ -1,22 +1,25 @@
 """Public API for DWPDSim."""
 
-from dwpdsim.config import SimulationConfig, TierConfig
-from dwpdsim.memory import MemManager
-from dwpdsim.metrics import SimulationMetrics, SimulationReport
-from dwpdsim.models import Query, StorageTier
+from dwpdsim.config import SimulationConfig, SSDConfig
+from dwpdsim.managers import DRAMManager, SSDManager, StorageManager
+from dwpdsim.metrics import MetricsCollector
+from dwpdsim.models import AccessResult, Medium, Placement, Query
+from dwpdsim.sequence import SequenceIndex
 from dwpdsim.simulator import DWPDSimulator
-from dwpdsim.storage import StorageManager
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 __all__ = [
+    "AccessResult",
+    "DRAMManager",
     "DWPDSimulator",
-    "MemManager",
+    "Medium",
+    "MetricsCollector",
+    "Placement",
     "Query",
+    "SSDConfig",
+    "SSDManager",
+    "SequenceIndex",
     "SimulationConfig",
-    "SimulationMetrics",
-    "SimulationReport",
     "StorageManager",
-    "StorageTier",
-    "TierConfig",
 ]

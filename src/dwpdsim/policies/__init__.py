@@ -1,32 +1,25 @@
 """Built-in replaceable policies."""
 
-from dwpdsim.policies.base import (
-    AdmissionPolicy,
-    MemCachePolicy,
-    PlacementContext,
-    PlacementDecision,
+from dwpdsim.policies.dram import DramPolicy, LRUDramPolicy
+from dwpdsim.policies.gc import GCPolicy, NaiveGCPolicy
+from dwpdsim.policies.placement import (
+    DropPlacementPolicy,
+    FixedPlacementPolicy,
     PlacementPolicy,
-    StorageCachePolicy,
 )
-from dwpdsim.policies.cache import FIFOPolicy, LRUPolicy
-from dwpdsim.policies.memory import AlwaysAdmitPolicy
-from dwpdsim.policies.storage import (
-    AlwaysQLCPolicy,
-    AlwaysTLCPolicy,
-    FrequencyPlacementPolicy,
+from dwpdsim.policies.storage_eviction import (
+    LRUStorageEvictionPolicy,
+    StorageEvictionPolicy,
 )
 
 __all__ = [
-    "AdmissionPolicy",
-    "AlwaysAdmitPolicy",
-    "AlwaysQLCPolicy",
-    "AlwaysTLCPolicy",
-    "FIFOPolicy",
-    "FrequencyPlacementPolicy",
-    "LRUPolicy",
-    "MemCachePolicy",
-    "PlacementContext",
-    "PlacementDecision",
+    "DramPolicy",
+    "DropPlacementPolicy",
+    "FixedPlacementPolicy",
+    "GCPolicy",
+    "LRUDramPolicy",
+    "LRUStorageEvictionPolicy",
+    "NaiveGCPolicy",
     "PlacementPolicy",
-    "StorageCachePolicy",
+    "StorageEvictionPolicy",
 ]
