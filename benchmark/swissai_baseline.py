@@ -5,7 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import time
-from datetime import datetime
+from datetime import UTC, datetime, timedelta, timezone, tzinfo
 from pathlib import Path
 
 import numpy as np
@@ -22,6 +22,8 @@ BLOCK_SIZE_BYTES = 8 * MIB
 MEMORY_BLOCKS = 65_536
 SLC_BLOCKS = 262_144
 TLC_BLOCKS = 2_097_152
+# The legacy naive segment precedes the newer UTC segment when interpreted as +08:00.
+DEFAULT_NAIVE_UTC_OFFSET_HOURS = 8
 
 
 def build_simulator(trace_path: Path) -> DWPDSimulator:
@@ -48,6 +50,13 @@ def elapsed_microseconds(timestamp: datetime, origin: datetime) -> int:
     return (delta.days * 86_400 + delta.seconds) * 1_000_000 + delta.microseconds
 
 
+def parse_timestamp(value: str, naive_timezone: tzinfo) -> datetime:
+    timestamp = datetime.fromisoformat(value)
+    if timestamp.tzinfo is None:
+        timestamp = timestamp.replace(tzinfo=naive_timezone)
+    return timestamp.astimezone(UTC)
+
+
 def run(
     dataset: Path,
     trace_path: Path,
@@ -55,6 +64,7 @@ def run(
     *,
     batch_requests: int,
     progress_every: int,
+    naive_utc_offset_hours: int,
 ) -> dict:
     simulator = build_simulator(trace_path)
     request_count = 0
@@ -66,6 +76,7 @@ def run(
     batch_hashes: list[int] = []
     next_progress = progress_every
     started = time.perf_counter()
+    naive_timezone = timezone(timedelta(hours=naive_utc_offset_hours))
 
     def flush_batch() -> None:
         if not batch_timestamps:
@@ -82,7 +93,7 @@ def run(
     with dataset.open(encoding="utf-8") as source:
         for line in source:
             record = json.loads(line)
-            timestamp = datetime.fromisoformat(record["created_at"])
+            timestamp = parse_timestamp(record["created_at"], naive_timezone)
             if first_timestamp is None:
                 first_timestamp = timestamp
 
@@ -121,6 +132,7 @@ def run(
         "block_occurrences": occurrence_count,
         "radix_tree_nodes": simulator.node_count,
         "dataset_reported_reuses": canonical_reuses,
+        "naive_timestamp_utc_offset_hours": naive_utc_offset_hours,
         "configuration_blocks": {
             "memory": MEMORY_BLOCKS,
             "slc": SLC_BLOCKS,
@@ -138,6 +150,12 @@ def main() -> None:
     parser.add_argument("--summary", type=Path, required=True)
     parser.add_argument("--batch-requests", type=int, default=256)
     parser.add_argument("--progress-every", type=int, default=1_000)
+    parser.add_argument(
+        "--naive-utc-offset-hours",
+        type=int,
+        default=DEFAULT_NAIVE_UTC_OFFSET_HOURS,
+        help="UTC offset for legacy created_at values without an explicit timezone",
+    )
     args = parser.parse_args()
 
     args.trace.parent.mkdir(parents=True, exist_ok=True)
@@ -149,6 +167,7 @@ def main() -> None:
         args.metrics,
         batch_requests=args.batch_requests,
         progress_every=args.progress_every,
+        naive_utc_offset_hours=args.naive_utc_offset_hours,
     )
     args.summary.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
     print(json.dumps(result, indent=2))
