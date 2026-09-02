@@ -1,10 +1,13 @@
 [build-system]
-requires = ["hatchling"]
-build-backend = "hatchling.build"
+requires = [
+  "scikit-build-core>=0.11",
+  "pybind11>=3.0",
+]
+build-backend = "scikit_build_core.build"
 
 [project]
 name = "dwpdsim"
-version = "0.2.0"
+version = "0.3.0"
 description = "A policy-driven block simulator for DRAM and peer SLC/TLC SSD media."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -17,12 +20,15 @@ dependencies = []
 
 [project.optional-dependencies]
 dev = [
+  "numpy>=2",
+  "pybind11>=3.0",
   "pytest>=8",
   "ruff>=0.6",
 ]
 
-[tool.hatch.build.targets.wheel]
-packages = ["src/dwpdsim"]
+[tool.scikit-build]
+wheel.packages = ["src/dwpdsim"]
+cmake.build-type = "Release"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
