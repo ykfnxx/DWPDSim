@@ -12,7 +12,12 @@ find_package(pybind11 CONFIG REQUIRED)
 add_library(
     dwpdsim_core
     STATIC
+    cpp/src/metrics.cpp
+    cpp/src/policies.cpp
     cpp/src/radix_tree.cpp
+    cpp/src/simulator.cpp
+    cpp/src/storage.cpp
+    cpp/src/trace_writer.cpp
 )
 target_include_directories(dwpdsim_core PUBLIC cpp/include)
 set_target_properties(dwpdsim_core PROPERTIES POSITION_INDEPENDENT_CODE ON)
@@ -32,4 +37,8 @@ if(DWPDSIM_BUILD_TESTS)
     add_executable(radix_tree_integration_test tests/cpp/radix_tree_integration_test.cpp)
     target_link_libraries(radix_tree_integration_test PRIVATE dwpdsim_core)
     add_test(NAME radix_tree_integration_test COMMAND radix_tree_integration_test)
+
+    add_executable(simulator_integration_test tests/cpp/simulator_integration_test.cpp)
+    target_link_libraries(simulator_integration_test PRIVATE dwpdsim_core)
+    add_test(NAME simulator_integration_test COMMAND simulator_integration_test)
 endif()
