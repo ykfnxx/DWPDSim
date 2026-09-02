@@ -3,8 +3,6 @@
 #include <cstddef>
 #include <cstdint>
 #include <limits>
-#include <optional>
-#include <string>
 
 namespace dwpdsim {
 
@@ -55,10 +53,29 @@ struct Node {
     HashId hash_id = 0;
     Timestamp first_seen_timestamp = 0;
     Timestamp last_access_timestamp = 0;
-    std::optional<Timestamp> last_hit_timestamp;
+    Timestamp last_hit_timestamp = 0;
     std::uint64_t access_count = 0;
+    std::uint64_t storage_block_address = 0;
+    std::uint32_t storage_stream_id = 0;
+    Medium storage_medium = Medium::Slc;
     bool in_memory = false;
-    std::optional<StorageLocation> storage_location;
+    bool on_storage = false;
+    bool has_last_hit = false;
+
+    StorageLocation storage_location() const noexcept {
+        return StorageLocation{storage_medium, storage_block_address, storage_stream_id};
+    }
+
+    void set_storage_location(StorageLocation location) noexcept {
+        storage_block_address = location.block_address;
+        storage_stream_id = location.stream_id;
+        storage_medium = location.medium;
+        on_storage = true;
+    }
+
+    void clear_storage_location() noexcept {
+        on_storage = false;
+    }
 };
 
 struct AccessContext {

@@ -1,4 +1,4 @@
-"""Analyze DWPDSim statistics and estimate SSD write endurance."""
+"""Estimate physical writes and DWPD from DWPDSim logical-write metrics."""
 
 from __future__ import annotations
 
@@ -7,92 +7,66 @@ import json
 from pathlib import Path
 
 SECONDS_PER_DAY = 86_400
+TIMESTAMP_SECONDS = {
+    "s": 1.0,
+    "seconds": 1.0,
+    "ms": 1e-3,
+    "milliseconds": 1e-3,
+    "us": 1e-6,
+    "microseconds": 1e-6,
+    "ns": 1e-9,
+    "nanoseconds": 1e-9,
+}
 
 
 def analyze(stats: dict, slc_wa: float, tlc_wa: float) -> dict:
-    """Calculate logical writes, estimated physical writes, and DWPD."""
-    if not slc_wa >= 1:
-        raise ValueError("slc_wa must be greater than or equal to 1")
-    if not tlc_wa >= 1:
-        raise ValueError("tlc_wa must be greater than or equal to 1")
+    if slc_wa < 1 or tlc_wa < 1:
+        raise ValueError("write amplification must be at least 1")
 
-    duration_seconds = stats["time"]["duration_seconds"]
-    slc_capacity_bytes = stats["configuration"]["slc_capacity_bytes"]
-    tlc_capacity_bytes = stats["configuration"]["tlc_capacity_bytes"]
+    unit = stats["time"]["unit"]
+    if unit not in TIMESTAMP_SECONDS:
+        raise ValueError(f"unsupported timestamp unit: {unit}")
 
-    if not duration_seconds > 0:
-        raise ValueError("duration_seconds must be greater than 0")
-    if not slc_capacity_bytes > 0:
-        raise ValueError("slc_capacity_bytes must be greater than 0")
-    if not tlc_capacity_bytes > 0:
-        raise ValueError("tlc_capacity_bytes must be greater than 0")
+    duration_seconds = stats["time"]["duration"] * TIMESTAMP_SECONDS[unit]
+    if duration_seconds <= 0:
+        raise ValueError("simulation duration must be positive")
 
-    dram_to_slc_bytes = stats["writes_from_dram"]["slc"]["bytes"]
-    dram_to_tlc_bytes = stats["writes_from_dram"]["tlc"]["bytes"]
-    slc_to_tlc_bytes = stats["transfers"]["slc_to_tlc"]["bytes"]
-    tlc_to_slc_bytes = stats["transfers"]["tlc_to_slc"]["bytes"]
-
+    slc_capacity = stats["configuration"]["slc_capacity_bytes"]
+    tlc_capacity = stats["configuration"]["tlc_capacity_bytes"]
+    slc_logical = stats["storage"]["slc"]["writes"]["bytes"]
+    tlc_logical = stats["storage"]["tlc"]["writes"]["bytes"]
+    slc_physical = slc_logical * slc_wa
+    tlc_physical = tlc_logical * tlc_wa
     days = duration_seconds / SECONDS_PER_DAY
-    system_input_write_bytes = dram_to_slc_bytes + dram_to_tlc_bytes
-    slc_logical_write_bytes = dram_to_slc_bytes + tlc_to_slc_bytes
-    tlc_logical_write_bytes = dram_to_tlc_bytes + slc_to_tlc_bytes
-    slc_physical_write_bytes = slc_logical_write_bytes * slc_wa
-    tlc_physical_write_bytes = tlc_logical_write_bytes * tlc_wa
 
     return {
         "duration_seconds": duration_seconds,
         "days": days,
-        "capacity_bytes": {
-            "slc": slc_capacity_bytes,
-            "tlc": tlc_capacity_bytes,
-        },
-        "wa": {
-            "slc": slc_wa,
-            "tlc": tlc_wa,
-        },
-        "input_write_bytes": {
-            "dram_to_slc": dram_to_slc_bytes,
-            "dram_to_tlc": dram_to_tlc_bytes,
-            "slc_to_tlc": slc_to_tlc_bytes,
-            "tlc_to_slc": tlc_to_slc_bytes,
-        },
-        "system_input_write_bytes": system_input_write_bytes,
-        "logical_write_bytes": {
-            "slc": slc_logical_write_bytes,
-            "tlc": tlc_logical_write_bytes,
-        },
+        "wa": {"slc": slc_wa, "tlc": tlc_wa},
+        "logical_write_bytes": {"slc": slc_logical, "tlc": tlc_logical},
         "estimated_physical_write_bytes": {
-            "slc": slc_physical_write_bytes,
-            "tlc": tlc_physical_write_bytes,
+            "slc": slc_physical,
+            "tlc": tlc_physical,
         },
         "dwpd": {
-            "system_equivalent": system_input_write_bytes
-            / (slc_capacity_bytes + tlc_capacity_bytes)
-            / days,
-            "slc": slc_physical_write_bytes / slc_capacity_bytes / days,
-            "tlc": tlc_physical_write_bytes / tlc_capacity_bytes / days,
+            "system_equivalent": (slc_logical + tlc_logical) / (slc_capacity + tlc_capacity) / days,
+            "slc": slc_physical / slc_capacity / days,
+            "tlc": tlc_physical / tlc_capacity / days,
         },
     }
 
 
-def _parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Estimate SLC and TLC physical writes and DWPD.")
-    parser.add_argument("stats", type=Path, help="path to DWPDSim statistics JSON")
+def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("stats", type=Path)
     parser.add_argument("--slc-wa", type=float, required=True)
     parser.add_argument("--tlc-wa", type=float, required=True)
     parser.add_argument("--output", type=Path, required=True)
-    return parser.parse_args()
+    args = parser.parse_args()
 
-
-def main() -> None:
-    args = _parse_args()
-    with args.stats.open(encoding="utf-8") as stats_file:
-        stats = json.load(stats_file)
-
+    stats = json.loads(args.stats.read_text(encoding="utf-8"))
     result = analyze(stats, args.slc_wa, args.tlc_wa)
-    with args.output.open("w", encoding="utf-8") as output_file:
-        json.dump(result, output_file, indent=2)
-        output_file.write("\n")
+    args.output.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
 
 
 if __name__ == "__main__":

@@ -16,7 +16,10 @@ std::uint64_t mix(std::uint64_t value) noexcept {
 }  // namespace
 
 std::size_t EdgeKeyHash::operator()(const EdgeKey& key) const noexcept {
-    return static_cast<std::size_t>(mix(key.parent_id) ^ mix(key.hash_id));
+    const std::uint64_t parent = mix(key.parent_id);
+    const std::uint64_t combined =
+        parent ^ (mix(key.hash_id) + 0x9e3779b97f4a7c15ULL + (parent << 6U) + (parent >> 2U));
+    return static_cast<std::size_t>(combined);
 }
 
 RadixTree::RadixTree() {
@@ -35,16 +38,12 @@ std::pair<NodeId, bool> RadixTree::get_or_create(
     }
 
     const NodeId node_id = static_cast<NodeId>(nodes_.size());
-    nodes_.push_back(Node{
-        parent_id,
-        hash_id,
-        timestamp,
-        timestamp,
-        std::nullopt,
-        0,
-        false,
-        std::nullopt,
-    });
+    Node node;
+    node.parent_id = parent_id;
+    node.hash_id = hash_id;
+    node.first_seen_timestamp = timestamp;
+    node.last_access_timestamp = timestamp;
+    nodes_.push_back(node);
     child_index_.emplace(key, node_id);
     return {node_id, true};
 }
@@ -71,6 +70,7 @@ void RadixTree::record_access(NodeId node_id, Timestamp timestamp, bool hit) noe
     ++entry.access_count;
     if (hit) {
         entry.last_hit_timestamp = timestamp;
+        entry.has_last_hit = true;
     }
 }
 

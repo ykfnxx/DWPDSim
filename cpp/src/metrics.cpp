@@ -5,8 +5,7 @@
 
 namespace dwpdsim {
 
-MetricsCollector::MetricsCollector(const SimulationConfig& config)
-    : block_size_bytes_(config.block_size_bytes) {
+MetricsCollector::MetricsCollector(const SimulationConfig& config) {
     io[0].stream_writes.resize(config.slc.stream_count);
     io[1].stream_writes.resize(config.tlc.stream_count);
 }

@@ -53,6 +53,7 @@ TraceWriter::TraceWriter(
 
 void TraceWriter::emit(
     const AccessContext& context,
+    NodeId node_id,
     Operation operation,
     const Node& node,
     const StorageLocation& location,
@@ -62,7 +63,7 @@ void TraceWriter::emit(
             << context.access_sequence << ',' << operation_name(operation) << ','
             << medium_name(location.medium) << ',' << location.stream_id << ','
             << location.block_address * block_size_bytes_ << ',' << block_size_bytes_ << ','
-            << context.node_id << ',' << node.hash_id << ',' << reason_name(reason) << '\n';
+            << node_id << ',' << node.hash_id << ',' << reason_name(reason) << '\n';
 }
 
 void TraceWriter::finish() {

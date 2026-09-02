@@ -1,148 +1,155 @@
-"""Fixed DRAM then storage access flow."""
+"""Thin Python facade over the C++ simulation core."""
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+import json
+import logging
+import time
+from collections.abc import Iterable, Sequence
+from os import PathLike
 from pathlib import Path
-from typing import Any
+from types import TracebackType
+from typing import Any, Self
 
-from dwpdsim.config import SimulationConfig
-from dwpdsim.errors import OutOfOrderQueryError
-from dwpdsim.managers import DRAMManager, StorageManager
-from dwpdsim.metrics import MetricsCollector
-from dwpdsim.models import (
-    AccessContext,
-    AccessResult,
-    Medium,
-    PlacementContext,
-    Query,
+from dwpdsim import _core
+from dwpdsim.config import (
+    MemoryPolicyConfig,
+    PlacementPolicyConfig,
+    SimulationConfig,
+    StorageEvictionPolicyConfig,
 )
-from dwpdsim.policies.dram import DramPolicy
-from dwpdsim.policies.gc import GCPolicy
-from dwpdsim.policies.placement import PlacementPolicy
-from dwpdsim.policies.storage_eviction import StorageEvictionPolicy
-from dwpdsim.sequence import ROOT_NODE, SequenceIndex
+from dwpdsim.models import Request
+
+logger = logging.getLogger(__name__)
 
 
 class DWPDSimulator:
-    """Process every hash ID in order with one fixed lookup flow."""
+    """Replay KV block requests through the C++ cache state machine."""
 
     def __init__(
         self,
         config: SimulationConfig,
-        dram: DRAMManager,
-        storage: StorageManager,
-        sequence: SequenceIndex,
-        metrics: MetricsCollector,
-    ) -> None:
-        self.config = config
-        self.dram = dram
-        self.storage = storage
-        self.sequence = sequence
-        self.metrics = metrics
-        self._last_timestamp: int | float | None = None
-
-    @classmethod
-    def from_config(
-        cls,
-        config: SimulationConfig,
+        trace_path: str | PathLike[str],
         *,
-        dram_policy: DramPolicy | None = None,
-        placement_policy: PlacementPolicy | None = None,
-        storage_eviction_policy: StorageEvictionPolicy | None = None,
-        slc_gc_policy: GCPolicy | None = None,
-        tlc_gc_policy: GCPolicy | None = None,
-    ) -> DWPDSimulator:
-        storage = StorageManager(
-            config,
-            placement_policy=placement_policy,
-            eviction_policy=storage_eviction_policy,
-            slc_gc_policy=slc_gc_policy,
-            tlc_gc_policy=tlc_gc_policy,
+        memory_policy: MemoryPolicyConfig | None = None,
+        placement_policy: PlacementPolicyConfig | None = None,
+        storage_eviction_policy: StorageEvictionPolicyConfig | None = None,
+    ) -> None:
+        memory = memory_policy or MemoryPolicyConfig()
+        placement = placement_policy or PlacementPolicyConfig()
+        storage_eviction = storage_eviction_policy or StorageEvictionPolicyConfig()
+
+        core_config = _core.SimulationConfig()
+        core_config.block_size_bytes = config.block_size_bytes
+        core_config.memory_capacity_bytes = config.memory_capacity_bytes
+        core_config.timestamp_unit = config.timestamp_unit
+        core_config.progress_interval_requests = config.progress_interval_requests
+        core_config.slc = self._medium_config(config.slc)
+        core_config.tlc = self._medium_config(config.tlc)
+
+        self.config = config
+        self.trace_path = Path(trace_path)
+        self._core = _core.Simulator(
+            core_config,
+            str(self.trace_path),
+            memory_policy=memory.kind,
+            admit_storage_hits=memory.admit_storage_hits,
+            memory_eviction_action=memory.eviction_action,
+            placement_policy=placement.kind,
+            fixed_medium=placement.fixed_medium,
+            fixed_stream_id=placement.fixed_stream_id,
+            slc_write_ratio=placement.slc_write_ratio,
+            storage_eviction_policy=storage_eviction.kind,
         )
-        return cls(
-            config=config,
-            dram=DRAMManager(config.dram_capacity_blocks, dram_policy),
-            storage=storage,
-            sequence=SequenceIndex(),
-            metrics=MetricsCollector(config),
+        self._processed_requests = 0
+        self._next_progress_request = config.progress_interval_requests
+        self._started_at = time.perf_counter()
+        logger.info(
+            "started DWPDSim block_size=%d memory_bytes=%d slc_bytes=%d tlc_bytes=%d",
+            config.block_size_bytes,
+            config.memory_capacity_bytes,
+            config.slc.capacity_bytes,
+            config.tlc.capacity_bytes,
         )
 
-    def process_query(self, query: Query) -> tuple[AccessResult, ...]:
-        self._validate_timestamp(query)
-        if not query.hash_ids:
-            self._last_timestamp = query.timestamp
-            self.metrics.record_query(query.timestamp)
-            return ()
+    @staticmethod
+    def _medium_config(config: Any):
+        result = _core.MediumConfig()
+        result.capacity_bytes = config.capacity_bytes
+        result.stream_count = config.stream_count
+        return result
 
-        parent_node_id = ROOT_NODE
-        results: list[AccessResult] = []
-        for position, block_id in enumerate(query.hash_ids):
-            prefix_node_id = self.sequence.existing_child(parent_node_id, block_id)
-            context = AccessContext(
-                query=query,
-                position=position,
-                block_id=block_id,
-                history=self.sequence.history(block_id),
-                parent_node=self.sequence.node(parent_node_id),
-                prefix_node=(
-                    self.sequence.node(prefix_node_id) if prefix_node_id is not None else None
-                ),
-            )
-            result = self._process_access(context)
-            if not results:
-                self._last_timestamp = query.timestamp
-                self.metrics.record_query(query.timestamp)
-            parent_node_id = self.sequence.observe(
-                block_id,
-                query.timestamp,
-                parent_node_id,
-            )
-            self.metrics.record_access(result)
-            results.append(result)
-        return tuple(results)
+    def process(self, timestamp: int, hash_ids: Sequence[int]) -> None:
+        """Process one request. Prefer ``process_batch`` for large datasets."""
 
-    def run(self, queries: Iterable[Query]) -> dict[str, Any]:
-        for query in queries:
-            self.process_query(query)
+        self._core.process(timestamp, hash_ids)
+        self._processed_requests += 1
+        self._log_progress()
+
+    def process_batch(self, timestamps: Any, offsets: Any, hash_ids: Any) -> None:
+        """Process contiguous uint64 request buffers without per-block Python calls."""
+
+        self._core.process_batch(timestamps, offsets, hash_ids)
+        self._processed_requests += len(timestamps)
+        self._log_progress()
+
+    def run(self, requests: Iterable[Request]) -> dict[str, Any]:
+        """Convenience path for small iterables of requests."""
+
+        for request in requests:
+            self.process(request.timestamp, request.hash_ids)
         return self.stats()
 
     def stats(self) -> dict[str, Any]:
-        return self.metrics.snapshot(self.storage)
+        return self._core.stats()
 
-    def write_stats(self, path: str | Path) -> None:
-        self.metrics.write_json(path, self.storage)
+    def write_stats(self, path: str | PathLike[str]) -> None:
+        Path(path).write_text(json.dumps(self.stats(), indent=2) + "\n", encoding="utf-8")
 
-    def _process_access(self, context: AccessContext) -> AccessResult:
-        if self.dram.access(context.block_id):
-            return AccessResult.DRAM_HIT
+    def finish(self) -> None:
+        self._core.finish()
+        stats = self.stats()
+        logger.info(
+            "finished DWPDSim requests=%d accesses=%d hit_rate=%.6f trace_events=%d elapsed_s=%.3f",
+            stats["accesses"]["requests"],
+            stats["accesses"]["total"],
+            stats["accesses"]["total_hit_rate"],
+            stats["trace"]["events"],
+            time.perf_counter() - self._started_at,
+        )
 
-        medium = self.storage.lookup(context.block_id)
-        if medium is None:
-            self._insert_into_dram(context)
-            return AccessResult.GLOBAL_MISS
+    close = finish
 
-        result = AccessResult.SLC_HIT if medium is Medium.SLC else AccessResult.TLC_HIT
-        if self.dram.should_admit(context):
-            self._insert_into_dram(context)
-        if self.storage.contains(context.block_id):
-            self.storage.read(context.block_id)
-        return result
+    @property
+    def node_count(self) -> int:
+        return self._core.node_count
 
-    def _insert_into_dram(self, context: AccessContext) -> None:
-        victim = self.dram.victim_for(context)
-        if victim is not None and not self.storage.contains(victim):
-            self.storage.write_from_dram(
-                PlacementContext(
-                    block_id=victim,
-                    history=self.sequence.history(victim),
-                    trigger=context,
-                )
+    @property
+    def trace_event_count(self) -> int:
+        return self._core.trace_event_count
+
+    def __enter__(self) -> Self:
+        return self
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_value: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> None:
+        self.finish()
+
+    def _log_progress(self) -> None:
+        interval = self.config.progress_interval_requests
+        if interval and self._processed_requests >= self._next_progress_request:
+            stats = self.stats()
+            logger.info(
+                "DWPDSim progress requests=%d accesses=%d memory_blocks=%d slc_blocks=%d "
+                "tlc_blocks=%d",
+                stats["accesses"]["requests"],
+                stats["accesses"]["total"],
+                stats["memory"]["resident_blocks"],
+                stats["storage"]["slc"]["resident_blocks"],
+                stats["storage"]["tlc"]["resident_blocks"],
             )
-        self.dram.insert(context.block_id, victim)
-
-    def _validate_timestamp(self, query: Query) -> None:
-        if self._last_timestamp is not None and query.timestamp < self._last_timestamp:
-            raise OutOfOrderQueryError(
-                f"query timestamp {query.timestamp} precedes {self._last_timestamp}"
-            )
+            self._next_progress_request = (self._processed_requests // interval + 1) * interval

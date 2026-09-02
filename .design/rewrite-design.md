@@ -1,6 +1,6 @@
 # DWPDSim 重写设计
 
-状态：需求基线已确认，待实现。
+状态：v0.3 核心设计已实现。
 
 ## 1. 背景与目标
 
@@ -140,7 +140,7 @@ metrics 和 trace。
 
 ### 4.4 StorageState
 
-只管理 SLC/TLC 的容量、地址槽和反向地址映射，不包含 chunk、page、GC 或擦除模型。
+只管理 SLC/TLC 的容量和地址槽分配，不包含 chunk、page、GC 或擦除模型。
 
 ### 4.5 Policies
 
@@ -196,33 +196,32 @@ Node {
 
     first_seen_timestamp: uint64
     last_access_timestamp: uint64
-    last_hit_timestamp: optional<uint64>
+    last_hit_timestamp: uint64
     access_count: uint64
 
+    storage_block_address: uint64
+    storage_stream_id: uint32
+    storage_medium: SLC | TLC
     in_memory: bool
-    storage_location: optional<StorageLocation>
-}
-
-StorageLocation {
-    medium: SLC | TLC
-    block_address: uint64
-    stream_id: uint32
+    on_storage: bool
+    has_last_hit: bool
 }
 ```
 
 `last_hit_timestamp` 在 memory hit 和 storage hit 时更新，global miss 不更新。详细命中
-计数放在全局 MetricsCollector 中，不在每个节点重复保存。
+计数放在全局 MetricsCollector 中，不在每个节点重复保存。显式状态位代替
+`std::optional`，使当前 C++17 布局保持为 64 字节/节点。
 
 不在节点上增加通用 key-value policy metadata。policy 如需 LRU 链表或额外评分，应在
 自身结构中按 NodeId 保存，避免动态类型和每节点固定膨胀。
 
 ## 6. 缓存状态与处理顺序
 
-节点状态由两个字段直接表达，不再增加一组重复的组合枚举：
+节点状态在逻辑上由两个字段表达，不再增加一组重复的组合枚举：
 
 ```text
 in_memory: bool
-storage_location: None | SLC location | TLC location
+on_storage + storage fields: None | SLC location | TLC location
 ```
 
 一次 block access 的固定顺序为：
@@ -296,9 +295,9 @@ place(node, storage_summary) -> Placement {
 
 ```text
 choose_victim(medium, incoming_node) -> NodeId
-on_storage_read(node_id)
-on_storage_write(node_id)
-on_storage_remove(node_id)
+on_storage_read(node_id, medium)
+on_storage_write(node_id, medium)
+on_storage_remove(node_id, medium)
 ```
 
 第一版内置每个介质独立的 LRU。policy 必须只返回当前位于目标介质的节点。
@@ -317,7 +316,6 @@ MediumConfig {
 容量在启动时换算为固定大小的 block slot。SLC 和 TLC 各自拥有：
 
 - 独立的地址空间；
-- `slot -> NodeId` 反向映射；
 - 空闲 slot 集合；
 - 独立的 StorageEvictionPolicy 状态。
 

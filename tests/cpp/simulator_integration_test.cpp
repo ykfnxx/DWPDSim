@@ -64,9 +64,9 @@ void test_promotion_drives_trim_before_write() {
     const dwpdsim::NodeId first = *simulator.tree().find_child(dwpdsim::kRootNodeId, 1);
     const dwpdsim::NodeId second = *simulator.tree().find_child(dwpdsim::kRootNodeId, 2);
     assert(simulator.tree().node(first).in_memory);
-    assert(!simulator.tree().node(first).storage_location.has_value());
+    assert(!simulator.tree().node(first).on_storage);
     assert(!simulator.tree().node(second).in_memory);
-    assert(simulator.tree().node(second).storage_location.has_value());
+    assert(simulator.tree().node(second).on_storage);
 
     std::ifstream trace(trace_path);
     std::vector<std::string> lines;
@@ -106,7 +106,7 @@ void test_storage_hit_can_bypass_memory() {
     const dwpdsim::NodeId ten = *simulator.tree().find_child(dwpdsim::kRootNodeId, 10);
     const dwpdsim::NodeId twenty = *simulator.tree().find_child(dwpdsim::kRootNodeId, 20);
     assert(!simulator.tree().node(ten).in_memory);
-    assert(simulator.tree().node(ten).storage_location.has_value());
+    assert(simulator.tree().node(ten).on_storage);
     assert(simulator.tree().node(twenty).in_memory);
     assert(simulator.metrics().storage_bypasses == 1);
     assert(simulator.metrics().storage_promotions == 0);

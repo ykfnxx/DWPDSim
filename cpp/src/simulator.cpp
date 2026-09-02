@@ -115,11 +115,12 @@ void Simulator::process_access(const AccessContext& context) {
     if (node.in_memory) {
         result = AccessResult::MemoryHit;
         memory_policy_->on_memory_access(context.node_id);
-    } else if (node.storage_location.has_value()) {
-        const StorageLocation location = *node.storage_location;
+    } else if (node.on_storage) {
+        const StorageLocation location = node.storage_location();
         result = location.medium == Medium::Slc ? AccessResult::SlcHit : AccessResult::TlcHit;
         trace_writer_.emit(
             context,
+            context.node_id,
             Operation::Read,
             node,
             location,
@@ -156,7 +157,7 @@ void Simulator::insert_into_memory(NodeId node_id, const AccessContext& context)
     node.in_memory = true;
     ++memory_used_blocks_;
     memory_policy_->on_memory_insert(node_id);
-    metrics_.memory_inserted(node.storage_location.has_value());
+    metrics_.memory_inserted(node.on_storage);
 }
 
 void Simulator::evict_from_memory(const AccessContext& context) {
@@ -164,7 +165,7 @@ void Simulator::evict_from_memory(const AccessContext& context) {
     Node& victim = tree_.node(victim_id);
     ++metrics_.memory_evictions;
 
-    if (victim.storage_location.has_value()) {
+    if (victim.on_storage) {
         ++metrics_.memory_evictions_with_storage_copy;
     } else {
         const EvictionAction action = memory_policy_->eviction_action(victim, context);
@@ -176,7 +177,7 @@ void Simulator::evict_from_memory(const AccessContext& context) {
         }
     }
 
-    metrics_.memory_removed(victim.storage_location.has_value());
+    metrics_.memory_removed(victim.on_storage);
     victim.in_memory = false;
     --memory_used_blocks_;
     memory_policy_->on_memory_remove(victim_id);
@@ -197,24 +198,26 @@ void Simulator::write_to_storage(NodeId node_id, const AccessContext& context) {
     }
 
     const std::uint64_t address = medium.allocate();
-    node.storage_location = StorageLocation{placement.medium, address, placement.stream_id};
+    node.set_storage_location(StorageLocation{placement.medium, address, placement.stream_id});
     storage_eviction_policy_->on_storage_write(node_id, placement.medium);
     metrics_.storage_written(placement.medium, node.in_memory);
     metrics_.record_io(Operation::Write, placement.medium, placement.stream_id);
     trace_writer_.emit(
         context,
+        node_id,
         Operation::Write,
         node,
-        *node.storage_location,
+        node.storage_location(),
         TraceReason::MemoryEviction
     );
 }
 
 void Simulator::trim_from_storage(NodeId node_id, const AccessContext& context) {
     Node& node = tree_.node(node_id);
-    const StorageLocation location = *node.storage_location;
+    const StorageLocation location = node.storage_location();
     trace_writer_.emit(
         context,
+        node_id,
         Operation::Trim,
         node,
         location,
@@ -224,7 +227,7 @@ void Simulator::trim_from_storage(NodeId node_id, const AccessContext& context) 
     storage_eviction_policy_->on_storage_remove(node_id, location.medium);
     storage_.medium(location.medium).release(location.block_address);
     metrics_.storage_removed(location.medium, node.in_memory);
-    node.storage_location.reset();
+    node.clear_storage_location();
 }
 
 }  // namespace dwpdsim

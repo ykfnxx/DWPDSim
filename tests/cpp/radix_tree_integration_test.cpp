@@ -25,6 +25,7 @@ int main() {
     assert(node.access_count == 2);
     assert(node.first_seen_timestamp == 10);
     assert(node.last_access_timestamp == 20);
+    assert(node.has_last_hit);
     assert(node.last_hit_timestamp == 20);
     assert(tree.size() == 5);
 

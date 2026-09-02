@@ -1,122 +1,191 @@
-import pytest
+import csv
 
-from dwpdsim import AccessResult, DWPDSimulator, Medium, Query, SequenceIndex
-from dwpdsim.errors import InvalidPolicyDecisionError, OutOfOrderQueryError
+import numpy as np
+
+from dwpdsim import (
+    DWPDSimulator,
+    MediumConfig,
+    MemoryPolicyConfig,
+    PlacementPolicyConfig,
+    Request,
+    SimulationConfig,
+)
 
 
-def test_fixed_lookup_flow_preserves_duplicates_and_parallel_media(config_factory):
-    simulator = DWPDSimulator.from_config(config_factory())
-    simulator.storage.seed(10, Medium.SLC)
-    simulator.storage.seed(20, Medium.TLC)
-
-    results = simulator.process_query(Query(0, (1, 1, 10, 20)))
-
-    assert results == (
-        AccessResult.GLOBAL_MISS,
-        AccessResult.DRAM_HIT,
-        AccessResult.SLC_HIT,
-        AccessResult.TLC_HIT,
+def config(*, memory_blocks=1, slc_blocks=1, tlc_blocks=2, streams=2):
+    block_size = 8
+    return SimulationConfig(
+        block_size_bytes=block_size,
+        memory_capacity_bytes=memory_blocks * block_size,
+        slc=MediumConfig(slc_blocks * block_size, streams),
+        tlc=MediumConfig(tlc_blocks * block_size, streams),
+        timestamp_unit="ticks",
     )
-    assert simulator.storage.medium_of(10) is Medium.SLC
-    assert simulator.storage.medium_of(20) is Medium.TLC
-    assert simulator.sequence.history(1).access_count == 2
-
-    first = simulator.sequence.existing_child(0, 1)
-    assert first is not None
-    assert simulator.sequence.existing_child(first, 1) is not None
-
-    writes_before = simulator.storage.writes_from_dram
-    simulator.process_query(Query(1, (30,)))
-    assert simulator.storage.writes_from_dram == writes_before
 
 
-def test_sequence_index_shares_request_prefixes():
-    sequence = SequenceIndex()
-    first_a = sequence.observe(1, 0, 0)
-    first_b = sequence.observe(2, 0, first_a)
-    second_a = sequence.observe(1, 1, 0)
-    second_c = sequence.observe(3, 1, second_a)
-
-    assert first_a == second_a
-    assert first_b != second_c
-    assert sequence.node(first_a).access_count == 2
+def read_trace(path):
+    with path.open(newline="", encoding="utf-8") as trace_file:
+        return list(csv.DictReader(trace_file))
 
 
-class _RejectStorageHits:
-    def should_admit(self, context, dram):
-        return False
-
-    def choose_victim(self, context, dram):
-        return next(iter(dram.blocks))
-
-
-def test_global_miss_bypasses_storage_hit_admission(config_factory):
-    simulator = DWPDSimulator.from_config(
-        config_factory(dram_blocks=1),
-        dram_policy=_RejectStorageHits(),
+def test_full_cache_flow_generates_consistent_metrics_and_trace(tmp_path):
+    trace_path = tmp_path / "trace.csv"
+    simulator = DWPDSimulator(
+        config(),
+        trace_path,
+        placement_policy=PlacementPolicyConfig(
+            kind="fixed",
+            fixed_medium="slc",
+            fixed_stream_id=1,
+        ),
     )
-    simulator.storage.seed(2, Medium.SLC)
 
-    assert simulator.process_query(Query(0, (1,))) == (AccessResult.GLOBAL_MISS,)
-    assert simulator.dram.resident_blocks == frozenset({1})
-    assert simulator.process_query(Query(1, (2,))) == (AccessResult.SLC_HIT,)
-    assert simulator.dram.resident_blocks == frozenset({1})
-
-
-class _CaptureDropPlacement:
-    def __init__(self):
-        self.context = None
-
-    def choose(self, context, storage):
-        self.context = context
-
-
-def test_eviction_places_the_victim_with_its_own_history(config_factory):
-    placement = _CaptureDropPlacement()
-    simulator = DWPDSimulator.from_config(
-        config_factory(dram_blocks=1),
-        placement_policy=placement,
+    simulator.run(
+        [
+            Request(0, [1]),
+            Request(1, [2]),
+            Request(2, [1]),
+            Request(3, [1]),
+        ]
     )
-    simulator.process_query(Query(0, (1,), other_info={"request": "first"}))
-    simulator.process_query(Query(1, (2,), other_info={"request": "second"}))
+    simulator.finish()
 
-    assert placement.context.block_id == 1
-    assert placement.context.history.access_count == 1
-    assert placement.context.trigger.block_id == 2
-    assert placement.context.trigger.query.other_info == {"request": "second"}
-    assert simulator.dram.resident_blocks == frozenset({2})
-    assert not simulator.storage.contains(1)
+    stats = simulator.stats()
+    assert stats["accesses"] == {
+        "requests": 4,
+        "total": 4,
+        "memory_hits": 1,
+        "slc_hits": 1,
+        "tlc_hits": 0,
+        "global_misses": 2,
+        "memory_hit_rate": 0.25,
+        "storage_hit_rate": 1 / 3,
+        "total_hit_rate": 0.5,
+        "global_miss_rate": 0.5,
+    }
+    assert stats["memory"]["evictions"] == 2
+    assert stats["memory"]["eviction_persists"] == 2
+    assert stats["storage"]["slc"]["reads"]["blocks"] == 1
+    assert stats["storage"]["slc"]["writes"]["blocks"] == 2
+    assert stats["storage"]["slc"]["trims"]["blocks"] == 1
+    assert stats["storage"]["slc"]["stream_writes"]["1"]["blocks"] == 2
+
+    rows = read_trace(trace_path)
+    assert [row["operation"] for row in rows] == ["WRITE", "READ", "TRIM", "WRITE"]
+    assert [row["stream_id"] for row in rows] == ["1", "1", "1", "1"]
+    assert [(row["node_id"], row["hash_id"]) for row in rows] == [
+        ("1", "1"),
+        ("1", "1"),
+        ("1", "1"),
+        ("2", "2"),
+    ]
 
 
-class _InvalidVictim:
-    def should_admit(self, context, dram):
-        return True
+def test_batch_and_request_interfaces_share_prefixes_identically(tmp_path):
+    requests = [Request(10, [1, 2]), Request(20, [1, 3]), Request(30, [4, 2])]
 
-    def choose_victim(self, context, dram):
-        return 999
-
-
-def test_invalid_dram_decision_does_not_commit_the_block(config_factory):
-    simulator = DWPDSimulator.from_config(
-        config_factory(dram_blocks=1),
-        dram_policy=_InvalidVictim(),
+    request_simulator = DWPDSimulator(
+        config(memory_blocks=8, slc_blocks=8, tlc_blocks=8),
+        tmp_path / "request.csv",
     )
-    simulator.process_query(Query(0, (1,)))
-    before = simulator.stats()
+    request_simulator.run(requests)
+    request_simulator.finish()
 
-    with pytest.raises(InvalidPolicyDecisionError):
-        simulator.process_query(Query(1, (2,)))
+    batch_simulator = DWPDSimulator(
+        config(memory_blocks=8, slc_blocks=8, tlc_blocks=8),
+        tmp_path / "batch.csv",
+    )
+    batch_simulator.process_batch(
+        np.asarray([10, 20, 30], dtype=np.uint64),
+        np.asarray([0, 2, 4, 6], dtype=np.uint64),
+        np.asarray([1, 2, 1, 3, 4, 2], dtype=np.uint64),
+    )
+    batch_simulator.finish()
 
-    assert simulator.dram.resident_blocks == frozenset({1})
-    assert simulator.sequence.history(2) is None
-    assert simulator.stats() == before
-    assert simulator.process_query(Query(0.5, (1,))) == (AccessResult.DRAM_HIT,)
+    assert batch_simulator.stats() == request_simulator.stats()
+    assert batch_simulator.node_count == 5
+    assert batch_simulator.stats()["accesses"]["memory_hits"] == 1
+    assert batch_simulator.stats()["accesses"]["global_misses"] == 5
 
 
-def test_equal_timestamps_are_kept_and_decreasing_time_is_rejected(config_factory):
-    simulator = DWPDSimulator.from_config(config_factory())
-    simulator.process_query(Query(5, (1,)))
-    simulator.process_query(Query(5, (2,)))
+def test_storage_hit_can_bypass_memory(tmp_path):
+    simulator = DWPDSimulator(
+        config(slc_blocks=2),
+        tmp_path / "bypass.csv",
+        memory_policy=MemoryPolicyConfig(
+            admit_storage_hits=False,
+            eviction_action="persist",
+        ),
+        placement_policy=PlacementPolicyConfig(fixed_medium="slc"),
+    )
 
-    with pytest.raises(OutOfOrderQueryError):
-        simulator.process_query(Query(4, (3,)))
+    simulator.process(0, [10])
+    simulator.process(1, [20])
+    simulator.process(2, [10])
+    simulator.finish()
+
+    stats = simulator.stats()
+    assert stats["memory"]["storage_bypasses"] == 1
+    assert stats["memory"]["storage_promotions"] == 0
+    assert stats["memory"]["resident_blocks"] == 1
+    assert stats["storage"]["slc"]["reads"]["blocks"] == 1
+
+
+def test_evicting_a_memory_copy_does_not_rewrite_storage(tmp_path):
+    simulator = DWPDSimulator(
+        config(slc_blocks=2),
+        tmp_path / "existing-copy.csv",
+        placement_policy=PlacementPolicyConfig(fixed_medium="slc"),
+    )
+
+    for timestamp, hash_id in enumerate([1, 2, 1, 3]):
+        simulator.process(timestamp, [hash_id])
+    simulator.finish()
+
+    stats = simulator.stats()
+    assert stats["memory"]["evictions"] == 3
+    assert stats["memory"]["evictions_with_storage_copy"] == 1
+    assert stats["storage"]["slc"]["writes"]["blocks"] == 2
+    assert [row["operation"] for row in read_trace(tmp_path / "existing-copy.csv")] == [
+        "WRITE",
+        "READ",
+        "WRITE",
+    ]
+
+
+def test_drop_policy_recomputes_an_absent_tree_node(tmp_path):
+    simulator = DWPDSimulator(
+        config(),
+        tmp_path / "drop.csv",
+        memory_policy=MemoryPolicyConfig(eviction_action="drop"),
+    )
+
+    for timestamp, hash_id in enumerate([1, 2, 1]):
+        simulator.process(timestamp, [hash_id])
+    simulator.finish()
+
+    stats = simulator.stats()
+    assert stats["accesses"]["global_misses"] == 3
+    assert stats["memory"]["eviction_drops"] == 2
+    assert stats["trace"]["events"] == 0
+    assert simulator.node_count == 2
+
+
+def test_ratio_placement_distributes_media_and_streams(tmp_path):
+    simulator = DWPDSimulator(
+        config(slc_blocks=4, tlc_blocks=4),
+        tmp_path / "ratio.csv",
+        placement_policy=PlacementPolicyConfig(kind="ratio", slc_write_ratio=0.5),
+    )
+
+    for timestamp, hash_id in enumerate([1, 2, 3, 4, 5]):
+        simulator.process(timestamp, [hash_id])
+    simulator.finish()
+
+    writes = [row for row in read_trace(tmp_path / "ratio.csv") if row["operation"] == "WRITE"]
+    assert [(row["medium"], row["stream_id"]) for row in writes] == [
+        ("SLC", "0"),
+        ("TLC", "0"),
+        ("SLC", "1"),
+        ("TLC", "1"),
+    ]

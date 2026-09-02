@@ -54,8 +54,6 @@ class MetricsCollector {
     std::optional<Timestamp> start_timestamp;
     std::optional<Timestamp> end_timestamp;
 
-  private:
-    std::uint64_t block_size_bytes_;
 };
 
 }  // namespace dwpdsim

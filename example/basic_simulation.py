@@ -1,61 +1,51 @@
-"""运行一个小型 DRAM + SLC/TLC 模拟并写出原始统计。"""
+"""Run a small KV cache simulation and write trace plus metrics."""
 
 from pathlib import Path
 
-from dwpdsim import DWPDSimulator, Medium, Query, SimulationConfig, SSDConfig
+from dwpdsim import (
+    DWPDSimulator,
+    MediumConfig,
+    PlacementPolicyConfig,
+    Request,
+    SimulationConfig,
+)
 
-
-def build_simulator() -> DWPDSimulator:
-    """创建满足 stream 与 GC reserve 约束的模拟器。"""
-
-    config = SimulationConfig(
-        block_size_bytes=4096,
-        dram_capacity_bytes=2 * 4096,
-        slc=SSDConfig(
-            capacity_bytes=64 * 1024,
-            chunk_size_bytes=16 * 1024,
-            stream_count=2,
-            gc_reserve_chunks=1,
-        ),
-        tlc=SSDConfig(
-            capacity_bytes=128 * 1024,
-            chunk_size_bytes=16 * 1024,
-            stream_count=2,
-            gc_reserve_chunks=1,
-        ),
-    )
-    simulator = DWPDSimulator.from_config(config)
-
-    # 初始持久层必须显式 seed；seed 不计模拟写入。
-    simulator.storage.seed(1, Medium.SLC, stream_id=0)
-    simulator.storage.seed(4, Medium.TLC, stream_id=1)
-    return simulator
-
-
-def build_queries() -> tuple[Query, ...]:
-    """构造以秒为单位、保留重复 block 的有序请求。"""
-
-    return (
-        Query(timestamp=0.0, hash_ids=(1, 2, 1)),
-        Query(
-            timestamp=3600.0,
-            hash_ids=(3, 4, 2),
-            other_info={"request_id": "request-2"},
-        ),
-        Query(timestamp=7200.0, hash_ids=(5, 1, 5)),
-    )
+MIB = 1024 * 1024
+BLOCK_SIZE = 8 * MIB
 
 
 def main() -> None:
-    simulator = build_simulator()
-    stats = simulator.run(build_queries())
+    config = SimulationConfig(
+        block_size_bytes=BLOCK_SIZE,
+        memory_capacity_bytes=2 * BLOCK_SIZE,
+        slc=MediumConfig(capacity_bytes=4 * BLOCK_SIZE, stream_count=2),
+        tlc=MediumConfig(capacity_bytes=8 * BLOCK_SIZE, stream_count=2),
+        timestamp_unit="us",
+    )
 
-    output = Path("simulation_stats.json")
-    simulator.write_stats(output)
+    trace_path = Path("simulation_trace.csv")
+    metrics_path = Path("simulation_metrics.json")
+    with DWPDSimulator(
+        config,
+        trace_path,
+        placement_policy=PlacementPolicyConfig(
+            kind="fixed",
+            fixed_medium="tlc",
+            fixed_stream_id=0,
+        ),
+    ) as simulator:
+        simulator.run(
+            [
+                Request(timestamp=0, hash_ids=[1, 2, 3]),
+                Request(timestamp=1_000, hash_ids=[1, 2, 4]),
+                Request(timestamp=2_000, hash_ids=[5, 6]),
+            ]
+        )
 
-    print("DWPDSim accesses")
-    print(stats["accesses"])
-    print(f"statistics written to {output}")
+    simulator.write_stats(metrics_path)
+    print(simulator.stats()["accesses"])
+    print(f"trace written to {trace_path}")
+    print(f"metrics written to {metrics_path}")
 
 
 if __name__ == "__main__":

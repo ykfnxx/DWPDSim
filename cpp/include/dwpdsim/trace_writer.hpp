@@ -15,6 +15,7 @@ class TraceWriter {
 
     void emit(
         const AccessContext& context,
+        NodeId node_id,
         Operation operation,
         const Node& node,
         const StorageLocation& location,
