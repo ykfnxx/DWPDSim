@@ -14,12 +14,14 @@ dataset parsing, batching, configuration, and result handling.
 
 - `cpp/include/dwpdsim/` and `cpp/src/`: radix tree, simulation state machine,
   policies, storage address management, metrics, trace writer, and pybind11 bindings.
-- `src/dwpdsim/`: thin Python configuration and simulator facade.
+- `src/dwpdsim/`: thin Python configuration and simulator facade, plus the MQSim adapter.
 - `benchmark/`: dataset-specific replay and performance workloads. Benchmarks are not
   correctness tests.
 - `tests/cpp/`: C++ integration tests across core modules.
 - `tests/`: Python functional tests through the public API.
 - `example/`: small user-facing examples.
+- `example/mqsim/`: small SLC and TLC configurations for pipeline verification, not
+  calibrated SSD models.
 - `.design/rewrite-design.md`: implemented architecture and behavior specification.
 
 Do not commit generated traces, metrics, build products, virtual environments, or
@@ -187,6 +189,11 @@ or trace throughput.
 Preserve deterministic metrics and trace ordering for the same input, configuration, and
 policies. Keep the generic trace schema simulator-neutral; add target-specific MQSim or
 other conversions as separate adapters.
+
+The MQSim adapter runs SLC and TLC as separate simulations. It maps each active
+DWPDSim stream to one MQSim flow and compacts node addresses into that flow's logical
+address partition. Keep simulator-specific workload XML and result parsing out of the
+C++ cache core.
 
 Keep changes focused and avoid unrelated cleanup. Update public documentation when
 behavior, configuration, output schema, or supported policy choices change. Commit

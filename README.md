@@ -119,3 +119,40 @@ simulator.process_batch(timestamps, offsets, hash_ids)
 - 当前及峰值驻留量、重复副本数和前缀树节点数。
 
 写放大、GC、擦除和 DWPD 不属于核心模拟结果，可在下游 SSD 模拟或分析中计算。
+
+## MQSim pipeline
+
+仓库中的适配器可将通用 CSV trace 按介质和 stream 转换为本地 MQSim trace，分别运行
+SLC 与 TLC 仿真，并将关键结果汇总为 JSON。先编译同级目录中的 MQSim：
+
+```bash
+make -C ../MQSim
+```
+
+然后使用 DWPDSim 生成的 trace 和 metrics：
+
+```bash
+uv run python scripts/mqsim_pipeline.py trace.csv metrics.json \
+  --mqsim-binary ../MQSim/MQSim \
+  --slc-config example/mqsim/ssdconfig-slc.xml \
+  --tlc-config example/mqsim/ssdconfig-tlc.xml \
+  --output build/mqsim-run \
+  --event-limit 100
+```
+
+`--event-limit` 仅用于快速验证；去掉后会转换并执行完整 trace。输出目录包含：
+
+- `manifest.json`：输入、时间单位、介质、stream 映射和所需容量；
+- `slc/`、`tlc/`：每个活跃 stream 的 trace、生成的 workload 和 MQSim XML 结果；
+- `summary.json`：各 flow 的请求统计和 FTL 统计。
+
+转换器将 `s`、`ms`、`us` 或 `ns` 时间戳换算为纳秒，并让每种介质从自己的首个事件
+开始计时。一个 DWPDSim stream 对应一个 MQSim flow；同一介质最多支持 8 个活跃
+stream。LBA 会按 stream 紧凑重映射，WRITE 分配地址，TRIM 释放地址，后续 WRITE 可
+复用该地址。这样生成的地址与 MQSim 对 flow 的逻辑地址分区一致，不保留通用 trace
+中的原始 `offset_bytes`。
+
+示例 SLC/TLC 配置容量较小并使用 ideal mapping table，只用于验证 pipeline，不代表
+经过校准的 SSD。替换配置时需使用 `PAGE_LEVEL` 地址映射；生成的 workload 会关闭
+device data cache，以满足当前本地 MQSim 的 TRIM 语义。Python 代码也可以直接调用
+`dwpdsim.mqsim.convert_trace` 和 `dwpdsim.mqsim.run_mqsim`。
