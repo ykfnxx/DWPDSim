@@ -10,9 +10,9 @@ namespace dwpdsim {
 
 Simulator::Simulator(
     SimulationConfig config,
-    std::unique_ptr<MemoryPolicy> memory_policy,
-    std::unique_ptr<WritePlacementPolicy> placement_policy,
-    std::unique_ptr<StorageEvictionPolicy> storage_eviction_policy,
+    std::unique_ptr<MemoryPolicyBase> memory_policy,
+    std::unique_ptr<WritePlacementPolicyBase> placement_policy,
+    std::unique_ptr<StorageEvictionPolicyBase> storage_eviction_policy,
     const std::filesystem::path& trace_path
 )
     : config_(validate_config(std::move(config))),

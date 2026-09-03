@@ -103,16 +103,21 @@ simulator.process_batch(timestamps, offsets, hash_ids)
 
 第 `i` 条请求对应 `hash_ids[offsets[i]:offsets[i + 1]]`。C++ 处理 batch 时释放 GIL。
 
-## 内置 policy
+## Policy 开发
 
-- MemoryPolicy：LRU，可配置 storage hit 是否提升，以及 segment 中无盘副本 block 使用
+- MemoryPolicyBase：LRU，可配置 storage hit 是否提升，以及 segment 中无盘副本 block 使用
   `drop` 或 `persist`；
-- WritePlacementPolicy：固定介质/stream，或按比例分配 SLC/TLC 并轮转 stream；
-- StorageEvictionPolicy：SLC/TLC 各自独立的 LRU segment 选择。
+- WritePlacementPolicyBase：固定介质/stream，或按比例分配 SLC/TLC 并轮转 stream；
+- StorageEvictionPolicyBase：SLC/TLC 各自独立的 LRU segment 选择。
 
 三类 policy 都是独立的 C++ 抽象接口，决策接口接收只读 `RadixTree`，并可通过节点创建、
 删除和访问完成通知维护派生状态。新增算法时直接实现对应接口并在 pybind11 构造入口注册，
 不使用逐访问的 Python callback。
+
+头文件和实现分别位于 `cpp/include/dwpdsim/policies/` 与 `cpp/src/policies/`，再按
+`memory/`、`write_placement/`、`storage_eviction/` 分类。每个具体 policy 独占一组
+`.hpp/.cpp` 文件，类别目录中的 `*_policy_base.hpp` 定义基类。`dwpdsim/policies.hpp`
+只作为兼容聚合头；开发单个策略时应直接 include 对应类别下的头文件。
 
 ## 输出指标
 

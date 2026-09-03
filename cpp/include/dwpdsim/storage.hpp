@@ -5,7 +5,7 @@
 #include <vector>
 
 #include "dwpdsim/config.hpp"
-#include "dwpdsim/policies.hpp"
+#include "dwpdsim/policies/write_placement/write_placement_policy_base.hpp"
 #include "dwpdsim/types.hpp"
 
 namespace dwpdsim {

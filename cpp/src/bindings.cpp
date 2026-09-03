@@ -56,7 +56,7 @@ EvictionAction parse_eviction_action(const std::string& value) {
     throw py::value_error("memory eviction action must be 'drop' or 'persist'");
 }
 
-std::unique_ptr<WritePlacementPolicy> make_placement_policy(
+std::unique_ptr<WritePlacementPolicyBase> make_placement_policy(
     const std::string& policy,
     const SimulationConfig& config,
     const std::string& fixed_medium,

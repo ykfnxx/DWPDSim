@@ -14,7 +14,7 @@
 
 namespace {
 
-class RecordingMemoryPolicy final : public dwpdsim::MemoryPolicy {
+class RecordingMemoryPolicy final : public dwpdsim::MemoryPolicyBase {
   public:
     bool admit_storage_hit(
         const dwpdsim::AccessContext&,
@@ -94,7 +94,7 @@ class RecordingMemoryPolicy final : public dwpdsim::MemoryPolicy {
     std::vector<dwpdsim::NodeId> resident_;
 };
 
-class SelectivePersistMemoryPolicy final : public dwpdsim::MemoryPolicy {
+class SelectivePersistMemoryPolicy final : public dwpdsim::MemoryPolicyBase {
   public:
     bool admit_storage_hit(
         const dwpdsim::AccessContext&,

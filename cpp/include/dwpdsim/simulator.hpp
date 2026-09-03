@@ -9,7 +9,9 @@
 
 #include "dwpdsim/config.hpp"
 #include "dwpdsim/metrics.hpp"
-#include "dwpdsim/policies.hpp"
+#include "dwpdsim/policies/memory/memory_policy_base.hpp"
+#include "dwpdsim/policies/storage_eviction/storage_eviction_policy_base.hpp"
+#include "dwpdsim/policies/write_placement/write_placement_policy_base.hpp"
 #include "dwpdsim/radix_tree.hpp"
 #include "dwpdsim/storage.hpp"
 #include "dwpdsim/trace_writer.hpp"
@@ -21,9 +23,9 @@ class Simulator {
   public:
     Simulator(
         SimulationConfig config,
-        std::unique_ptr<MemoryPolicy> memory_policy,
-        std::unique_ptr<WritePlacementPolicy> placement_policy,
-        std::unique_ptr<StorageEvictionPolicy> storage_eviction_policy,
+        std::unique_ptr<MemoryPolicyBase> memory_policy,
+        std::unique_ptr<WritePlacementPolicyBase> placement_policy,
+        std::unique_ptr<StorageEvictionPolicyBase> storage_eviction_policy,
         const std::filesystem::path& trace_path
     );
 
@@ -67,9 +69,9 @@ class Simulator {
     std::uint64_t memory_used_blocks_ = 0;
     RadixTree tree_;
     StorageState storage_;
-    std::unique_ptr<MemoryPolicy> memory_policy_;
-    std::unique_ptr<WritePlacementPolicy> placement_policy_;
-    std::unique_ptr<StorageEvictionPolicy> storage_eviction_policy_;
+    std::unique_ptr<MemoryPolicyBase> memory_policy_;
+    std::unique_ptr<WritePlacementPolicyBase> placement_policy_;
+    std::unique_ptr<StorageEvictionPolicyBase> storage_eviction_policy_;
     MetricsCollector metrics_;
     TraceWriter trace_writer_;
     std::optional<Timestamp> last_timestamp_;
