@@ -17,6 +17,14 @@ class LruStorageEvictionPolicy final : public StorageEvictionPolicyBase {
         const RadixTree& tree
     ) override;
 
+    StorageEvictionAction eviction_action(
+        Medium medium,
+        NodeId victim_endpoint,
+        NodeId incoming_node,
+        const AccessContext& context,
+        const RadixTree& tree
+    ) override;
+
     void on_storage_read(NodeId node_id, Medium medium) override;
     void on_storage_write(NodeId node_id, Medium medium) override;
     void on_storage_remove(NodeId node_id, Medium medium) override;

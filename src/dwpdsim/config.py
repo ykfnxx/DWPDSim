@@ -46,6 +46,6 @@ class PlacementPolicyConfig:
 
 @dataclass(frozen=True, slots=True)
 class StorageEvictionPolicyConfig:
-    """Select the independently replaceable storage eviction policy."""
+    """Select storage eviction; built-in LRU demotes SLC and drops TLC segments."""
 
     kind: str = "lru"

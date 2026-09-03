@@ -72,12 +72,32 @@ def test_full_cache_flow_generates_consistent_metrics_and_trace(tmp_path):
     assert stats["storage"]["slc"]["trims"]["blocks"] == 1
     assert stats["storage"]["slc"]["evicted_segments"] == 1
     assert stats["storage"]["slc"]["evicted_blocks"] == 1
+    assert stats["storage"]["slc"]["demoted_segments"] == 1
+    assert stats["storage"]["slc"]["demoted_blocks"] == 1
     assert stats["storage"]["slc"]["stream_writes"]["1"]["blocks"] == 2
+    assert stats["storage"]["tlc"]["writes"]["blocks"] == 1
+    assert stats["storage"]["tlc"]["stream_writes"]["0"]["blocks"] == 1
+    assert stats["trace"]["schema_version"] == 2
 
     rows = read_trace(trace_path)
-    assert [row["operation"] for row in rows] == ["WRITE", "READ", "TRIM", "WRITE"]
-    assert [row["stream_id"] for row in rows] == ["1", "1", "1", "1"]
+    assert [row["operation"] for row in rows] == [
+        "WRITE",
+        "READ",
+        "WRITE",
+        "TRIM",
+        "WRITE",
+    ]
+    assert [row["medium"] for row in rows] == ["SLC", "SLC", "TLC", "SLC", "SLC"]
+    assert [row["stream_id"] for row in rows] == ["1", "1", "0", "1", "1"]
+    assert [row["reason"] for row in rows] == [
+        "MEMORY_EVICTION",
+        "STORAGE_HIT",
+        "SLC_DEMOTION",
+        "SLC_DEMOTION",
+        "MEMORY_EVICTION",
+    ]
     assert [(row["node_id"], row["hash_id"]) for row in rows] == [
+        ("1", "1"),
         ("1", "1"),
         ("1", "1"),
         ("1", "1"),
@@ -178,7 +198,7 @@ def test_drop_policy_recomputes_an_absent_tree_node(tmp_path):
 
 def test_memory_and_storage_eviction_use_segment_batches(tmp_path):
     simulator = DWPDSimulator(
-        config(memory_blocks=3, slc_blocks=3),
+        config(memory_blocks=3, slc_blocks=3, tlc_blocks=3),
         tmp_path / "segments.csv",
         placement_policy=PlacementPolicyConfig(fixed_medium="slc"),
     )
@@ -196,8 +216,46 @@ def test_memory_and_storage_eviction_use_segment_batches(tmp_path):
     stats = simulator.stats()
     assert stats["storage"]["slc"]["evicted_segments"] == 1
     assert stats["storage"]["slc"]["evicted_blocks"] == 3
-    operations = [row["operation"] for row in read_trace(tmp_path / "segments.csv")]
-    assert operations == ["WRITE"] * 3 + ["TRIM"] * 3 + ["WRITE"]
+    assert stats["storage"]["slc"]["demoted_segments"] == 1
+    assert stats["storage"]["slc"]["demoted_blocks"] == 3
+    rows = read_trace(tmp_path / "segments.csv")
+    assert [row["operation"] for row in rows] == ["WRITE"] * 3 + [
+        "WRITE",
+        "TRIM",
+    ] * 3 + ["WRITE"]
+    assert [row["reason"] for row in rows[3:9]] == ["SLC_DEMOTION"] * 6
+
+
+def test_slc_demotion_evicts_full_tlc_before_destination_write(tmp_path):
+    trace_path = tmp_path / "nested-demotion.csv"
+    simulator = DWPDSimulator(
+        config(memory_blocks=1, slc_blocks=1, tlc_blocks=1),
+        trace_path,
+        placement_policy=PlacementPolicyConfig(
+            kind="fixed",
+            fixed_medium="slc",
+            fixed_stream_id=1,
+        ),
+    )
+
+    for timestamp, hash_id in enumerate([1, 2, 3, 4]):
+        simulator.process(timestamp, [hash_id])
+    simulator.finish()
+
+    stats = simulator.stats()
+    assert stats["storage"]["slc"]["demoted_segments"] == 2
+    assert stats["storage"]["slc"]["demoted_blocks"] == 2
+    assert stats["storage"]["slc"]["reads"]["blocks"] == 0
+    assert stats["storage"]["tlc"]["evicted_segments"] == 1
+    assert stats["storage"]["tlc"]["evicted_blocks"] == 1
+    assert stats["storage"]["tlc"]["demoted_blocks"] == 0
+    assert stats["storage"]["tlc"]["reads"]["blocks"] == 0
+    rows = read_trace(trace_path)
+    assert [(row["operation"], row["medium"], row["reason"]) for row in rows[4:7]] == [
+        ("TRIM", "TLC", "STORAGE_EVICTION"),
+        ("WRITE", "TLC", "SLC_DEMOTION"),
+        ("TRIM", "SLC", "SLC_DEMOTION"),
+    ]
 
 
 def test_ratio_placement_distributes_media_and_streams(tmp_path):

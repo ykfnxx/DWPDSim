@@ -257,27 +257,92 @@ void Simulator::evict_from_storage(
         context,
         tree_
     );
-    tree_.resolve_segment(endpoint, storage_segment_scratch_);
-    ++metrics_.storage_evicted_segments[medium_index(medium)];
+    const StorageEvictionAction action = storage_eviction_policy_->eviction_action(
+        medium,
+        endpoint,
+        incoming_node,
+        context,
+        tree_
+    );
+    std::vector<NodeId>& segment = storage_segment_scratch_[medium_index(medium)];
+    tree_.resolve_segment(endpoint, segment);
+    const std::size_t index = medium_index(medium);
+    ++metrics_.storage_evicted_segments[index];
+    if (action == StorageEvictionAction::DemoteToTlc) {
+        ++metrics_.storage_demoted_segments[index];
+    }
 
-    for (NodeId victim_id : storage_segment_scratch_) {
+    for (NodeId victim_id : segment) {
         Node& victim = tree_.node(victim_id);
         if (!victim.on_storage || victim.storage_medium != medium) {
             continue;
         }
-        ++metrics_.storage_evicted_blocks[medium_index(medium)];
-        trim_from_storage(victim_id, context);
+        ++metrics_.storage_evicted_blocks[index];
+        if (action == StorageEvictionAction::DemoteToTlc) {
+            ++metrics_.storage_demoted_blocks[index];
+            demote_to_tlc(victim_id, context);
+        } else {
+            trim_from_storage(victim_id, context);
+        }
     }
 
     if (defer_storage_prune_) {
         deferred_prune_scratch_.insert(
             deferred_prune_scratch_.end(),
-            storage_segment_scratch_.begin(),
-            storage_segment_scratch_.end()
+            segment.begin(),
+            segment.end()
         );
     } else {
-        prune_segment(storage_segment_scratch_);
+        prune_segment(segment);
     }
+}
+
+void Simulator::demote_to_tlc(NodeId node_id, const AccessContext& context) {
+    Node& node = tree_.node(node_id);
+    const StorageLocation source = node.storage_location();
+    const Placement placement = placement_policy_->place_on_medium(
+        Medium::Tlc,
+        node,
+        context,
+        tree_,
+        storage_.summary()
+    );
+    MediumState& target = storage_.medium(placement.medium);
+
+    if (target.full()) {
+        evict_from_storage(placement.medium, node_id, context);
+    }
+
+    const StorageLocation destination{
+        placement.medium,
+        target.allocate(),
+        placement.stream_id,
+    };
+    trace_writer_.emit(
+        context,
+        node_id,
+        Operation::Write,
+        node,
+        destination,
+        TraceReason::SlcDemotion
+    );
+    metrics_.record_io(Operation::Write, destination.medium, destination.stream_id);
+    trace_writer_.emit(
+        context,
+        node_id,
+        Operation::Trim,
+        node,
+        source,
+        TraceReason::SlcDemotion
+    );
+    metrics_.record_io(Operation::Trim, source.medium, source.stream_id);
+
+    storage_eviction_policy_->on_storage_remove(node_id, source.medium);
+    storage_.medium(source.medium).release(source.block_address);
+    metrics_.storage_removed(source.medium, node.in_memory);
+    node.set_storage_location(destination);
+    storage_eviction_policy_->on_storage_write(node_id, destination.medium);
+    metrics_.storage_written(destination.medium, node.in_memory);
 }
 
 void Simulator::trim_from_storage(NodeId node_id, const AccessContext& context) {

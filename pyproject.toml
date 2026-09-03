@@ -7,8 +7,8 @@ build-backend = "scikit_build_core.build"
 
 [project]
 name = "dwpdsim"
-version = "0.4.0"
-description = "A policy-driven block simulator for DRAM and peer SLC/TLC SSD media."
+version = "0.5.0"
+description = "A policy-driven block simulator for DRAM and SLC/TLC SSD media."
 readme = "README.md"
 requires-python = ">=3.11"
 license = "MIT"

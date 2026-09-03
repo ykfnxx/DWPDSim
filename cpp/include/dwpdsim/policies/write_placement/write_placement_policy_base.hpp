@@ -31,6 +31,14 @@ class WritePlacementPolicyBase {
         const StorageSummary& storage
     ) = 0;
 
+    virtual Placement place_on_medium(
+        Medium medium,
+        const Node& node,
+        const AccessContext& context,
+        const RadixTree& tree,
+        const StorageSummary& storage
+    ) = 0;
+
     virtual void on_node_created(
         NodeId,
         std::optional<NodeId>,

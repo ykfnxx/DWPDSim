@@ -1,6 +1,6 @@
 # DWPDSim 重写设计
 
-状态：v0.4 核心设计已实现。
+状态：v0.5 核心设计已实现。
 
 ## 1. 背景与目标
 
@@ -78,20 +78,26 @@ storage hit 无论是否提升到内存，都必须产生 READ。选择 bypass �
 一次选择可能释放多个内存 block，但每个 block 的 DROP、PERSIST、WRITE 和状态更新仍然
 独立执行。global miss 新创建的节点不会因为自己尚未驻留而被实际移除。
 
-### 2.4 盘上淘汰
+### 2.4 盘上淘汰与 SLC 到 TLC 迁移
 
-SLC 或 TLC 写满时，由独立的 StorageEvictionPolicy 选择一个与目标介质相交的 segment：
+SLC 或 TLC 写满时，由 StorageEvictionPolicy 选择一个与目标介质相交的 segment，并为
+整个 segment 返回淘汰动作：
 
-1. 对 segment 与目标介质交集中的每个 block 产生 TRIM；
-2. 逐个释放其逻辑地址并清除盘上位置；
-3. 使用任一释放地址完成当前 WRITE，其余地址留在空闲集合。
+1. 内置 LRU 淘汰 SLC 时返回 `DEMOTE_TO_TLC`，将 segment 的 SLC 子集逐 block 迁到 TLC；
+2. 每个迁移 block 先产生 TLC WRITE，再产生源 SLC TRIM，最后把唯一 storage location
+   从 SLC 改为 TLC；
+3. 如果 TLC 已满，迁移 WRITE 前先淘汰一个 TLC segment；
+4. 内置 LRU 淘汰 TLC 时返回 `DROP`，对 segment 的 TLC 子集逐 block 产生 TRIM、释放地址
+   并清除盘上位置；
+5. 源介质完成整个 segment 后，再执行触发本次淘汰的 WRITE。
 
-如果被淘汰 block 仍在内存，它变为 memory-only；否则变为无驻留状态。无驻留且没有
+`DROP` 的 block 如果仍在内存，它变为 memory-only；否则变为无驻留状态。无驻留且没有
 child 的节点会从树中删除，并继续向 root prune 新产生的空祖先；有存活 child 的无驻留
-节点继续作为结构节点保留。
+节点继续作为结构节点保留。`DEMOTE_TO_TLC` 的 block 始终保留唯一盘上副本，不触发节点
+删除，原访问统计也继续保留。
 
 同一个节点最多拥有一个盘上副本，即只能在 SLC 或 TLC 之一；允许同时拥有内存副本。
-SLC 和 TLC 是两个并列介质，不存在自动的 SLC 到 TLC 分层迁移。
+SLC 迁移是逻辑位置变化，不产生额外 READ，也不模拟真实数据传输、设备并发或完成延迟。
 
 ## 3. 实现技术栈
 
@@ -257,7 +263,8 @@ on_storage + storage fields: None | SLC location | TLC location
 分配递增的 trace sequence：
 
 - storage hit：先 READ，再执行 promotion 引发的内存淘汰和可能的 WRITE；
-- 写入已满介质：先 TRIM，再 WRITE；
+- SLC segment 迁移：每个 block 先 TLC WRITE，再 SLC TRIM；
+- TLC 已满：先完成所选 TLC segment 的 TRIM，再执行目标 TLC WRITE；
 - global miss：没有计算 I/O，只有为 admission 引发的可选 WRITE/TRIM。
 
 READ/WRITE/TRIM 一旦写入 trace，DWPDSim 立即应用其逻辑结果，不等待下游 SSD
@@ -294,7 +301,7 @@ global miss 不调用 `admit_storage_hit`，而是直接 admission。第一版�
 
 ### 7.2 WritePlacementPolicy
 
-仅在 MemoryPolicy 已决定 `PERSIST` 时调用：
+MemoryPolicy 决定 `PERSIST` 时调用一般 placement：
 
 ```text
 place(node, context, tree, storage_summary) -> Placement {
@@ -306,18 +313,31 @@ place(node, context, tree, storage_summary) -> Placement {
 它负责选择介质和 stream，不负责淘汰盘上 block。内置实现至少包括固定介质/stream，
 以及按可配置比例分配 SLC/TLC 的实现。
 
+SLC 迁移已经确定目标介质，使用：
+
+```text
+place_on_medium(TLC, node, context, tree, storage_summary) -> Placement
+```
+
+该接口只为 TLC 选择 stream。RatioPlacementPolicy 会轮转 TLC stream，但不会把迁移写入
+计入一般 placement 的介质比例；FixedPlacementPolicy 在固定目标不是 TLC 时使用 TLC
+stream 0。
+
 ### 7.3 StorageEvictionPolicy
 
 当 placement 选择的介质没有空闲地址时调用：
 
 ```text
 choose_victim(medium, incoming_node, context, tree) -> NodeId
+eviction_action(medium, victim_endpoint, incoming_node, context, tree)
+    -> DROP | DEMOTE_TO_TLC
 on_storage_read(node_id, medium)
 on_storage_write(node_id, medium)
 on_storage_remove(node_id, medium)
 ```
 
-内置实现为每个介质维护独立 LRU。返回端点对应的 segment 必须与目标介质存在非空交集。
+内置实现为每个介质维护独立 LRU。返回端点对应的 segment 必须与目标介质存在非空交集；
+它对 SLC 返回迁移、对 TLC 返回删除。
 
 三类 policy 都接收 `on_node_created`、`on_node_removed` 和 `on_access_complete` 通知。
 创建通知发生在 edge 加入后且决策前；删除通知发生在 edge 移除和 parent child count 更新后、
@@ -362,10 +382,11 @@ WRITE 从空闲集合取得一个 slot。TRIM 后 slot 立即可重用。stream 
 | `length_bytes` | uint64 | 第一版恒为 block size |
 | `node_id` | uint64 | 前缀树节点标识 |
 | `hash_id` | uint64 | 输入 hash，便于分析 |
-| `reason` | enum | STORAGE_HIT、MEMORY_EVICTION 或 STORAGE_EVICTION |
+| `reason` | enum | STORAGE_HIT、MEMORY_EVICTION、STORAGE_EVICTION 或 SLC_DEMOTION |
 
 trace 使用缓冲写入，不在内存中累计全部事件。输出 metrics 时同时记录 block size、
-timestamp unit、介质容量和 trace schema version，转换脚本据此生成 MQSim 等目标格式。
+timestamp unit、介质容量和 trace schema version。加入 `SLC_DEMOTION` 后 schema version
+为 2，转换脚本据此生成 MQSim 等目标格式。
 
 ## 10. Metrics
 
@@ -392,7 +413,8 @@ timestamp unit、介质容量和 trace schema version，转换脚本据此生成
 
 ### 存储与 trace
 
-- SLC/TLC 各自的淘汰 segment/block 数，以及 READ、WRITE、TRIM 数和字节数；
+- SLC/TLC 各自离开源介质的淘汰 segment/block 数、其中迁到 TLC 的 segment/block 数，
+  以及 READ、WRITE、TRIM 数和字节数；
 - 每个 stream 的 WRITE 数和字节数；
 - SLC/TLC 当前和峰值驻留 block 数；
 - 同时位于内存和某个 SSD 的 block 数；
@@ -499,7 +521,8 @@ metrics 分析，不依赖日志。
 - memory segment 中已有盘上副本的 block 不重复 WRITE；
 - memory segment 中无盘副本 block 的 DROP 和 PERSIST；
 - placement 正确选择 SLC/TLC 和 stream；
-- 目标介质写满后只对 segment 的目标介质子集执行逐 block `TRIM -> WRITE`；
+- SLC 写满后只迁移 segment 的 SLC 子集，并逐 block 输出 `TLC WRITE -> SLC TRIM`；
+- TLC 写满后只删除 segment 的 TLC 子集，并在目标 TLC WRITE 前输出 TRIM；
 - 盘上 victim 仍在内存时只清除 storage location；
 - 无驻留 leaf 删除、递归 prune 和相同 hash 冷启动；
 - policy 决策前和访问完成后的统计时序；
@@ -533,7 +556,7 @@ GC、transfer 或防御性 rollback 行为。
 
 - SSD chunk/page/erase/GC 仿真；
 - SSD 延迟、队列和完成事件；
-- SLC/TLC 自动迁移或层级关系；
+- TLC 到 SLC 的反向迁移、基于温度的主动迁移或后台迁移；
 - 输入中的显式 read/write/delete 操作；
 - 同一节点在 SLC 和 TLC 保存双副本；
 - Python 高频 policy callback 或动态插件发现；

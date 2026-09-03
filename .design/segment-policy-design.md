@@ -1,8 +1,8 @@
 # DWPDSim RadixTree Policy 与 Segment 淘汰设计
 
-状态：v0.4 已实现。
+状态：v0.5 已实现。
 
-本文描述 DWPDSim v0.4 的 RadixTree、policy 和 segment 淘汰语义。它与
+本文描述 DWPDSim v0.5 的 RadixTree、policy 和 segment 淘汰语义。它与
 [`rewrite-design.md`](rewrite-design.md) 一起构成当前实现规范；访问、介质、trace 和
 metrics 的其余语义以该文档为准。
 
@@ -287,12 +287,13 @@ segment 或再次调用 `choose_victim()`。
 一次 segment 淘汰可能释放多个 memory block。当前 admission 只需要一个 block，额外释放
 的容量继续作为空闲容量保留。
 
-## 6. Storage Segment 淘汰
+## 6. Storage Segment 淘汰与 SLC 迁移
 
 WritePlacementPolicy 选择目标 medium 后，如果该 medium 没有空闲 block：
 
 ```text
 endpoint = storage_policy.choose_victim(medium, incoming_node, context, tree)
+action = storage_policy.eviction_action(medium, endpoint, incoming_node, context, tree)
 segment = tree.resolve_segment(endpoint)
 ```
 
@@ -300,19 +301,36 @@ Simulator 按 `endpoint -> segment_top` 遍历：
 
 ```text
 for node in segment:
-    if node not in target medium:
+    if node not in source medium:
         continue
 
-    emit TRIM for this block
-    release this block address
-    clear this block storage location
+    if action == DEMOTE_TO_TLC:
+        ensure TLC has one free block, evicting one TLC segment if necessary
+        emit TLC WRITE for this block
+        emit source SLC TRIM for this block
+        move this block storage location from SLC to TLC
+    else:
+        emit TRIM for this block
+        release this block address
+        clear this block storage location
 ```
 
-其他介质以及 Memory 中的副本不受本次 storage eviction 影响。目标介质至少释放一个
-block；如果 segment 释放多个 block，多余地址进入该介质的空闲集合，由后续 WRITE 使用。
+StorageEvictionPolicy 在选出端点后，为整个 segment 返回一次动作。内置 LRU 对 SLC 返回
+`DEMOTE_TO_TLC`，对 TLC 返回 `DROP`。SLC 动作仅操作 segment 的 SLC 子集；原本已经位于
+TLC 的成员不重复写入。TLC 动作也仅操作 TLC 子集。
+
+SLC 迁移对每个 block 严格输出 `TLC WRITE -> SLC TRIM`，随后才更新该节点的唯一 storage
+location。迁移目标 stream 由 WritePlacementPolicy 的 `place_on_medium(TLC, ...)` 选择；
+这个强制介质写入不计入 ratio policy 的原始 SLC/TLC 写入配比。迁移期间节点始终至少有一份
+盘上逻辑副本，因此不会删除 RadixTree 节点或访问统计。
+
+TLC 满时先对一个 TLC segment 执行 DROP，再输出迁移的 TLC WRITE。一次 SLC segment 的
+迁移可能多次触发 TLC 淘汰。SLC 和 TLC 使用各自的 segment scratch，避免嵌套淘汰覆盖外层
+SLC segment 快照。
 
 TRIM、地址释放和 trace 仍逐 block 发生。segment 不是一条合并后的 SSD I/O，也不要求
-segment block 在地址空间中连续。
+segment block 在地址空间中连续。迁移不产生额外 READ；通用 trace 只表达 TLC 目标写入和
+SLC 源位置失效，不模拟真实数据传输或跨设备完成依赖。
 
 ## 7. Segment 快照与嵌套状态变化
 
@@ -320,15 +338,18 @@ segment 必须根据 `choose_victim()` 返回时的拓扑一次性确定。不�
 判断 parent 是否为分叉，因为删除 child 会改变 `child_count`，从而越过原 segment
 边界。
 
-Simulator 使用可复用 scratch buffer 保存 NodeId：
+Simulator 使用可复用 scratch buffer 保存 NodeId；memory 使用一份，SLC/TLC storage
+各使用一份：
 
 ```text
-segment_nodes = [endpoint, ..., segment_top]
+memory_segment = [endpoint, ..., segment_top]
+storage_segment[medium] = [endpoint, ..., segment_top]
 ```
 
 scratch buffer 保存全局 NodeId，不保存内部 NodeSlot，也不保存 `Node&`。逐 block 执行
-期间可能因为 WRITE 触发嵌套的 storage segment eviction；全局 NodeId 不会被分配给其他
-block，因此不会因为内部 slot 回收而错误引用新节点。
+期间可能因为 SLC 迁移 WRITE 触发嵌套的 TLC segment eviction；按介质分离 buffer 保持
+外层 SLC 快照不变。全局 NodeId 不会被分配给其他 block，因此不会因为内部 slot 回收而
+错误引用新节点。
 
 整个 segment 的介质操作结束后再执行统一的拓扑 prune。DWPDSim 不为 segment 建立事务、
 回滚或失败后继续运行机制；发生无法继续的输出或状态错误时直接终止模拟。
@@ -431,15 +452,22 @@ storage.slc.evicted_segments
 storage.slc.evicted_blocks
 storage.tlc.evicted_segments
 storage.tlc.evicted_blocks
+storage.slc.demoted_segments
+storage.slc.demoted_blocks
+storage.tlc.demoted_segments
+storage.tlc.demoted_blocks
 tree.nodes_created
 tree.nodes_removed
 ```
 
 现有 READ、WRITE、TRIM、DROP、PERSIST、bytes 和 stream 指标继续按 block 计数。一个
-segment 释放多个 block 时只增加一次对应的 `evicted_segments`。
+segment 释放多个 block 时只增加一次对应的 `evicted_segments`。`evicted_*` 统计离开源
+介质的全部 segment/block，包含 DROP 和迁移；`demoted_*` 是其中迁到 TLC 的子集，内置
+策略下 TLC 的该组计数始终为零。
 
 I/O trace 继续逐 block 输出，不增加虚构的 segment I/O 或 `segment_sequence`；segment
-数量只在 metrics 中记录。
+数量只在 metrics 中记录。SLC 迁移产生一条 TLC WRITE 和一条 SLC TRIM，两条 reason 均为
+`SLC_DEMOTION`；该枚举扩展对应 trace schema version 2。
 
 NodeId 直接等于 hash_id，trace 中 `node_id` 和 `hash_id` 数值相同，并保留两个字段以维持
 现有 schema。
@@ -456,12 +484,14 @@ NodeId 直接等于 hash_id，trace 中 `node_id` 和 `hash_id` 数值相同，�
 6. segment 在状态修改前完成快照；
 7. segment 是逻辑批量单位，实际状态变化和 I/O 是 block 粒度；
 8. SSD 副本状态不会拆分 memory segment；
-9. storage eviction 只删除 segment 与目标 medium 的交集；
+9. storage eviction 只操作 segment 与源 medium 的交集；SLC 迁移不触碰原有 TLC 子集；
 10. 节点不在所有介质且没有 child 时才可删除；
 11. 节点删除时同时丢弃访问统计和 policy 派生状态；
 12. NodeSlot 只能在 policy 清理旧状态后回收；
 13. SLC 和 TLC 不保存同一节点的双副本；
-14. root 不对应真实 block，也不参与 segment 淘汰。
+14. root 不对应真实 block，也不参与 segment 淘汰；
+15. SLC 迁移按 block 输出 TLC WRITE 后再输出 SLC TRIM，且不产生迁移 READ；
+16. 嵌套 TLC 淘汰不能修改外层 SLC segment 快照。
 
 ## 11. 实现范围
 
@@ -473,10 +503,8 @@ NodeId 直接等于 hash_id，trace 中 `node_id` 和 `hash_id` 数值相同，�
   - NodeId 查找、segment 查询、节点删除和 prune 接口；
 - `cpp/src/radix_tree.cpp`
   - 全局 hash 索引、slot 管理、child count 和结构删除；
-- `cpp/include/dwpdsim/policies.hpp`
-  - policy 的只读 tree 参数和拓扑/访问通知；
-- `cpp/src/policies.cpp`
-  - LRU 将最旧驻留 block 映射到其全局 segment 端点；
+- `cpp/include/dwpdsim/policies/`、`cpp/src/policies/`
+  - 三类 policy 的独立基类/实现文件、只读 tree 参数、淘汰动作和生命周期通知；
 - `cpp/include/dwpdsim/simulator.hpp`、`cpp/src/simulator.cpp`
   - segment 快照、逐 block 执行、统一 prune 和通知顺序；
 - `cpp/include/dwpdsim/metrics.hpp`、`cpp/src/bindings.cpp`
@@ -496,14 +524,16 @@ Python 输入仍然是 timestamp 加有序 hash 序列，不增加逐节点 Pyth
 4. internal NodeSlot 回收不会改变外部 NodeId；
 5. memory segment 同时包含有 SSD 副本和无 SSD 副本的 block；
 6. 有副本 block 不重复 WRITE，无副本 block 按策略 DROP 或 PERSIST；
-7. SLC/TLC 只删除全局 segment 与目标介质的交集；
+7. SLC 只迁移全局 segment 的 SLC 子集，TLC 只删除其 TLC 子集；
 8. 一个 segment 释放多个 block 时容量和 block/segment metrics 正确；
 9. 分叉节点不属于 child 的下游 segment，并作为自身上游 segment 的端点；
 10. 删除一条分支后 branch 变成单 child，后续 segment 正确向上合并；
 11. 所有介质都不存在但仍有 child 的节点保留为拓扑节点；
 12. 最后一个 child 删除后向上递归 prune，并同时丢弃统计；
 13. batch 和逐请求接口产生相同的 segment、metrics 和 trace；
-14. 现有 READ-before-WRITE、TRIM-before-WRITE 和逐 block trace 顺序保持确定。
+14. storage hit 的 READ、SLC 迁移的 `TLC WRITE -> SLC TRIM`、TLC 满时的
+    `TLC TRIM -> TLC WRITE` 和逐 block trace 顺序保持确定；
+15. TLC 满时的嵌套淘汰不覆盖正在迁移的 SLC segment 快照。
 
 性能基准需要额外记录：
 

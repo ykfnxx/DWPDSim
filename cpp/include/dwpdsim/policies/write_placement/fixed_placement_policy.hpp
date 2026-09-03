@@ -15,6 +15,14 @@ class FixedPlacementPolicy final : public WritePlacementPolicyBase {
         const StorageSummary& storage
     ) override;
 
+    Placement place_on_medium(
+        Medium medium,
+        const Node& node,
+        const AccessContext& context,
+        const RadixTree& tree,
+        const StorageSummary& storage
+    ) override;
+
   private:
     Placement placement_;
 };

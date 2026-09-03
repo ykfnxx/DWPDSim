@@ -17,6 +17,21 @@ NodeId LruStorageEvictionPolicy::choose_victim(
     return tree.segment_leaf_for(*tails_[medium_index(medium)]);
 }
 
+StorageEvictionAction LruStorageEvictionPolicy::eviction_action(
+    Medium medium,
+    NodeId victim_endpoint,
+    NodeId incoming_node,
+    const AccessContext& context,
+    const RadixTree& tree
+) {
+    static_cast<void>(victim_endpoint);
+    static_cast<void>(incoming_node);
+    static_cast<void>(context);
+    static_cast<void>(tree);
+    return medium == Medium::Slc ? StorageEvictionAction::DemoteToTlc
+                                 : StorageEvictionAction::Drop;
+}
+
 void LruStorageEvictionPolicy::on_storage_read(NodeId node_id, Medium medium) {
     detach(node_id);
     attach_front(node_id, medium);

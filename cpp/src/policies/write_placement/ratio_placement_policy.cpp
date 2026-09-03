@@ -27,10 +27,28 @@ Placement RatioPlacementPolicy::place(
     const Medium medium = static_cast<double>(write_counts_[0]) < target_slc_writes
                               ? Medium::Slc
                               : Medium::Tlc;
+    ++write_counts_[medium_index(medium)];
+    return next_placement(medium);
+}
+
+Placement RatioPlacementPolicy::place_on_medium(
+    Medium medium,
+    const Node& node,
+    const AccessContext& context,
+    const RadixTree& tree,
+    const StorageSummary& storage
+) {
+    static_cast<void>(node);
+    static_cast<void>(context);
+    static_cast<void>(tree);
+    static_cast<void>(storage);
+    return next_placement(medium);
+}
+
+Placement RatioPlacementPolicy::next_placement(Medium medium) {
     const std::size_t index = medium_index(medium);
     const std::uint32_t stream_id = next_stream_[index] % stream_counts_[index];
     ++next_stream_[index];
-    ++write_counts_[index];
     return Placement{medium, stream_id};
 }
 

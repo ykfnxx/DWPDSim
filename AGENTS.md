@@ -1,6 +1,6 @@
 # AGENTS.md
 
-DWPDSim replays KV cache requests across memory and peer SLC/TLC media, producing
+DWPDSim replays KV cache requests across memory and SLC/TLC media, producing
 cache metrics and generic READ/WRITE/TRIM traces. Read [README.md](README.md) for usage
 and [.design/rewrite-design.md](.design/rewrite-design.md) plus
 [.design/segment-policy-design.md](.design/segment-policy-design.md) for detailed semantics.
@@ -20,16 +20,18 @@ and [.design/rewrite-design.md](.design/rewrite-design.md) plus
   simulator serially.
 - Memory and storage policies choose radix segments. The simulator snapshots the global
   segment and operates on its target-medium subset at block granularity. Memory blocks
-  with SSD copies do not produce duplicate WRITE; storage eviction emits every selected
-  TRIM before the incoming WRITE.
+  with SSD copies do not produce duplicate WRITE. SLC eviction demotes its selected
+  subset with a TLC WRITE followed by the source SLC TRIM for each block; TLC eviction
+  drops its selected subset with TRIM before the incoming WRITE.
 - A node is pruned only when it has no memory or storage copy and no children. Deletion
   discards node statistics and policy-derived state; reappearance of the same hash starts
   a cold lifecycle with the same logical `NodeId`.
 - Memory hits produce no I/O. Global misses enter memory without READ. Storage hits
   always READ before any promotion-induced eviction.
-- SLC and TLC are peers with no automatic migration. A node may have a memory copy and
-  at most one SSD copy. SSD internals, latency, write amplification, and DWPD belong in
-  downstream adapters/analysis, outside the cache core.
+- A node may have a memory copy and at most one SSD copy. The built-in storage LRU uses
+  one-way logical SLC-to-TLC demotion; it emits no migration READ and models no transfer
+  latency. SSD internals, latency, write amplification, and DWPD belong in downstream
+  adapters/analysis, outside the cache core.
 - Stream trace output and call `finish()` before consuming it. Preserve deterministic
   metrics and event ordering; review output producers and consumers together when
   changing schemas. MQSim details and replay commands are in the README.

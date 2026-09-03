@@ -23,11 +23,14 @@ Request(timestamp=100, hash_ids=[11, 22, 33])
 - 三处均不存在：global miss，认为计算完成并强制加入内存；
 - 内存淘汰以 radix segment 为逻辑批次；segment 内每个 block 独立决定复用盘上副本、
   丢弃或由 WritePlacementPolicy 选择介质和 stream 后写盘；
-- 目标介质满时，StorageEvictionPolicy 选择 segment，对该介质子集逐 block 产生 TRIM，
-  再执行当前 WRITE；
+- SLC 满时，StorageEvictionPolicy 选择 segment，内置 LRU 将其 SLC 子集逐 block 迁到
+  TLC；每个 block 依次产生 TLC WRITE 和源 SLC TRIM，之后再执行当前 SLC WRITE；
+- TLC 满时，内置 LRU 对所选 segment 的 TLC 子集逐 block 产生 TRIM，再执行目标 TLC
+  WRITE；SLC 迁移时如果 TLC 已满，同样先执行这一步；
 - block 在所有介质消失且没有 child 后从树中删除，访问统计随之丢弃。
 
-SLC 与 TLC 是并列介质。DWPDSim 不模拟 SSD 内部 GC、擦除、数据搬移或设备延迟。
+SLC 到 TLC 是逻辑位置迁移，不建立双副本，也不额外产生迁移 READ。DWPDSim 不模拟 SSD
+内部 GC、擦除、真实数据传输或设备延迟。
 
 ## 安装
 
@@ -107,8 +110,10 @@ simulator.process_batch(timestamps, offsets, hash_ids)
 
 - MemoryPolicyBase：LRU，可配置 storage hit 是否提升，以及 segment 中无盘副本 block 使用
   `drop` 或 `persist`；
-- WritePlacementPolicyBase：固定介质/stream，或按比例分配 SLC/TLC 并轮转 stream；
-- StorageEvictionPolicyBase：SLC/TLC 各自独立的 LRU segment 选择。
+- WritePlacementPolicyBase：固定介质/stream，或按比例分配 SLC/TLC 并轮转 stream；迁移
+  使用 `place_on_medium()` 为已确定的 TLC 选择 stream，不改变原始写入比例；
+- StorageEvictionPolicyBase：选择淘汰 segment，并返回 `DROP` 或 `DEMOTE_TO_TLC`；内置
+  LRU 对 SLC 选择迁移、对 TLC 选择删除，两个介质仍各自维护 LRU 顺序。
 
 三类 policy 都是独立的 C++ 抽象接口，决策接口接收只读 `RadixTree`，并可通过节点创建、
 删除和访问完成通知维护派生状态。新增算法时直接实现对应接口并在 pybind11 构造入口注册，
@@ -127,10 +132,15 @@ simulator.process_batch(timestamps, offsets, hash_ids)
 - memory/SLC/TLC hit、global miss 及命中率；
 - promote、bypass、segment/block 淘汰、drop、persist；
 - SLC/TLC 的 READ、WRITE、TRIM 数量和字节数；
+- SLC/TLC 离开源介质的淘汰 segment/block 数，以及其中迁到 TLC 的 segment/block 数；
 - 每个 stream 的写入量；
 - 当前及峰值驻留量、重复副本数、当前树节点数以及节点创建/删除数。
 
 写放大、GC、擦除和 DWPD 不属于核心模拟结果，可在下游 SSD 模拟或分析中计算。
+
+SLC 迁移在通用 trace 中表现为 TLC `WRITE` 和 SLC `TRIM`，reason 均为
+`SLC_DEMOTION`；增加该 reason 后 trace schema version 为 2。MQSim pipeline 会把它们
+分别送入 TLC 和 SLC 设备模拟；当前不会把两个设备的完成事件串成一条跨介质迁移延迟。
 
 ## MQSim pipeline
 

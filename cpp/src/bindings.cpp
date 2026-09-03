@@ -124,6 +124,8 @@ py::dict medium_metrics(
     result["trims"] = blocks_and_bytes(io.trims, block_size);
     result["evicted_segments"] = metrics.storage_evicted_segments[index];
     result["evicted_blocks"] = metrics.storage_evicted_blocks[index];
+    result["demoted_segments"] = metrics.storage_demoted_segments[index];
+    result["demoted_blocks"] = metrics.storage_demoted_blocks[index];
     result["stream_writes"] = std::move(streams);
     return result;
 }
@@ -189,7 +191,7 @@ py::dict simulator_stats(const Simulator& simulator) {
     tree["nodes_removed"] = metrics.tree_nodes_removed;
 
     py::dict trace;
-    trace["schema_version"] = 1;
+    trace["schema_version"] = 2;
     trace["events"] = simulator.trace_event_count();
 
     py::dict result;
@@ -211,7 +213,7 @@ PYBIND11_MODULE(_core, module) {
     using namespace dwpdsim;
 
     module.doc() = "C++ core for DWPDSim";
-    module.attr("CORE_VERSION") = "0.4.0";
+    module.attr("CORE_VERSION") = "0.5.0";
 
     py::class_<MediumConfig>(module, "MediumConfig")
         .def(py::init<>())

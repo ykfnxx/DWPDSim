@@ -52,6 +52,8 @@ class MetricsCollector {
     std::array<std::uint64_t, 2> peak_storage_resident_blocks{};
     std::array<std::uint64_t, 2> storage_evicted_segments{};
     std::array<std::uint64_t, 2> storage_evicted_blocks{};
+    std::array<std::uint64_t, 2> storage_demoted_segments{};
+    std::array<std::uint64_t, 2> storage_demoted_blocks{};
     std::array<MediumIoCounters, 2> io;
 
     std::uint64_t tree_nodes_created = 0;

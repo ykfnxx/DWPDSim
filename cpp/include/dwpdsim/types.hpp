@@ -31,6 +31,11 @@ enum class EvictionAction : std::uint8_t {
     Persist,
 };
 
+enum class StorageEvictionAction : std::uint8_t {
+    Drop,
+    DemoteToTlc,
+};
+
 enum class Operation : std::uint8_t {
     Read,
     Write,
@@ -41,6 +46,7 @@ enum class TraceReason : std::uint8_t {
     StorageHit,
     MemoryEviction,
     StorageEviction,
+    SlcDemotion,
 };
 
 struct StorageLocation {

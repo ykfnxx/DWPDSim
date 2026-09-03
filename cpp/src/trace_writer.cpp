@@ -31,6 +31,8 @@ std::string_view reason_name(TraceReason reason) noexcept {
             return "MEMORY_EVICTION";
         case TraceReason::StorageEviction:
             return "STORAGE_EVICTION";
+        case TraceReason::SlcDemotion:
+            return "SLC_DEMOTION";
     }
     return "";
 }

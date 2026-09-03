@@ -22,7 +22,17 @@ class RatioPlacementPolicy final : public WritePlacementPolicyBase {
         const StorageSummary& storage
     ) override;
 
+    Placement place_on_medium(
+        Medium medium,
+        const Node& node,
+        const AccessContext& context,
+        const RadixTree& tree,
+        const StorageSummary& storage
+    ) override;
+
   private:
+    Placement next_placement(Medium medium);
+
     double slc_ratio_;
     std::array<std::uint64_t, 2> write_counts_{};
     std::array<std::uint32_t, 2> next_stream_{};
