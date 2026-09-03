@@ -1,6 +1,6 @@
 # DWPDSim 重写设计
 
-状态：v0.3 核心设计已实现。
+状态：v0.4 核心设计已实现。
 
 ## 1. 背景与目标
 
@@ -45,9 +45,9 @@ Request {
 - block 大小默认 8 MiB，整次模拟中固定不变；
 - uint64 hash 碰撞不在模拟范围内。
 
-树节点由 `(parent_node_id, hash_id)` 唯一确定，而不是只由 `hash_id` 确定。例如
-`[1, 2]` 和 `[3, 2]` 中最后一个 hash 会对应两个不同节点。这一规则直接表达 vLLM
-请求之间的共享前缀。
+输入 `hash_id` 是全局唯一逻辑 block 标识，并直接作为 `NodeId`。同一个 hash 必须始终
+表示同一个 block，并具有一致的 parent；parent 只表达请求前缀拓扑，不参与节点身份。
+root 使用专用内部 slot，不占用任何合法 uint64 hash。
 
 ### 2.2 三种访问结果
 
@@ -67,27 +67,28 @@ storage hit 无论是否提升到内存，都必须产生 READ。选择 bypass �
 
 ### 2.3 内存淘汰
 
-内存空间不足时，由 MemoryPolicy 选择 victim：
+内存空间不足时，由 MemoryPolicy 选择一个 segment 端点。Simulator 根据全局树拓扑展开
+完整 segment，并对其中当前位于内存的 block 逐个处理：
 
 - victim 已有 SLC/TLC 副本：只删除内存副本，不产生 WRITE；
 - victim 没有盘上副本：MemoryPolicy 决定 `DROP` 或 `PERSIST`；
 - `DROP`：节点变为无驻留状态；
 - `PERSIST`：调用 WritePlacementPolicy 选择介质和 stream，随后产生 WRITE。
 
-global miss 新创建的节点不能成为为自身 admission 选择的 victim。
+一次选择可能释放多个内存 block，但每个 block 的 DROP、PERSIST、WRITE 和状态更新仍然
+独立执行。global miss 新创建的节点不会因为自己尚未驻留而被实际移除。
 
 ### 2.4 盘上淘汰
 
-SLC 或 TLC 写满时，由独立的 StorageEvictionPolicy 在目标介质上选择 victim：
+SLC 或 TLC 写满时，由独立的 StorageEvictionPolicy 选择一个与目标介质相交的 segment：
 
-1. 产生 victim 对应的 TRIM；
-2. 释放其逻辑地址；
-3. 清除节点上的盘上位置；
-4. 使用释放的地址完成当前 WRITE。
+1. 对 segment 与目标介质交集中的每个 block 产生 TRIM；
+2. 逐个释放其逻辑地址并清除盘上位置；
+3. 使用任一释放地址完成当前 WRITE，其余地址留在空闲集合。
 
-如果 victim 仍在内存，它变为 memory-only；否则变为无驻留状态。节点仍保留在 hash
-前缀树中，以保留前缀关系和访问统计。“从盘上管理结构中减除”指清除存储驻留和地址
-映射，不删除可能仍被后继节点引用的树节点。
+如果被淘汰 block 仍在内存，它变为 memory-only；否则变为无驻留状态。无驻留且没有
+child 的节点会从树中删除，并继续向 root prune 新产生的空祖先；有存活 child 的无驻留
+节点继续作为结构节点保留。
 
 同一个节点最多拥有一个盘上副本，即只能在 SLC 或 TLC 之一；允许同时拥有内存副本。
 SLC 和 TLC 是两个并列介质，不存在自动的 SLC 到 TLC 分层迁移。
@@ -173,25 +174,35 @@ for hash_id in request.hash_ids:
 每个位置都对应一个有状态的节点，因此不跨 block 边界做路径压缩。这里的 radix 是
 uint64 hash 构成的前缀树，而不是对单个 uint64 的 8 个字节再建立 ART。
 
+segment 由当前全局拓扑定义。`child_count != 1` 的节点是 segment 端点：它可以是普通
+leaf，也可以是分叉节点。一个 segment 从端点向 root 遍历，包含连续的单 child 祖先，
+在 root 或另一个分叉 parent 前停止。这样下游 segment 不包含其 parent 分叉节点，而分叉
+节点自身作为上游 segment 的端点，确保每个真实节点恰好属于一个可淘汰 segment。
+
+Memory、SLC、TLC 都只是全局树节点集合的子集。policy 选择 segment 端点，实际操作分别
+作用于 segment 与目标介质子集的交集。
+
 ### 5.2 物理表示
 
-第一版使用扁平表示，避免每个节点一个堆对象：
+实现使用扁平 slot 表示，避免每个节点一个堆对象，并让稀疏 hash 不直接作为 vector 下标：
 
 ```text
-using NodeId = uint64_t
+using NodeId = HashId = uint64_t
+using NodeSlot = uint32_t
 
-nodes: std::vector<Node>
-child_index: std::unordered_map<EdgeKey, NodeId>
+nodes: std::vector<NodeRecord>
+node_index: std::unordered_map<NodeId, NodeSlot>
+free_slots: std::vector<NodeSlot>
 ```
 
-`NodeId` 在一次模拟中稳定，可直接被 policy、内存驻留集合和存储地址表引用。具体 hash
-表实现由基准测试选择，不在第一版引入自定义 ART 或磁盘索引。
+`NodeId` 是稳定的逻辑身份，policy、trace 和 segment scratch 都只保存 NodeId。
+`NodeSlot` 只在 RadixTree 内部使用，节点删除并通知 policy 后可以回收。root 固定使用内部
+slot 0，不映射到 NodeId。
 
 ### 5.3 节点字段
 
 ```text
 Node {
-    parent_id: NodeId
     hash_id: uint64
 
     first_seen_timestamp: uint64
@@ -208,9 +219,12 @@ Node {
 }
 ```
 
+parent、first child、sibling link 和 child count 位于内部 NodeRecord 中，由 RadixTree 的
+只读查询接口暴露必要拓扑信息。
+
 `last_hit_timestamp` 在 memory hit 和 storage hit 时更新，global miss 不更新。详细命中
 计数放在全局 MetricsCollector 中，不在每个节点重复保存。显式状态位代替
-`std::optional`，使当前 C++17 布局保持为 64 字节/节点。
+`std::optional`。
 
 不在节点上增加通用 key-value policy metadata。policy 如需 LRU 链表或额外评分，应在
 自身结构中按 NodeId 保存，避免动态类型和每节点固定膨胀。
@@ -227,14 +241,17 @@ on_storage + storage fields: None | SLC location | TLC location
 一次 block access 的固定顺序为：
 
 ```text
-1. 在当前 parent 下查找或创建节点
+1. 在当前 parent 下查找或创建节点；新节点先发送 topology 通知
 2. 根据节点状态确定 memory hit / storage hit / global miss
-3. 执行 READ、admission 和可能的 eviction/write/trim
-4. 更新节点访问统计
-5. 通知 policy 本次访问结果
-6. 更新全局 metrics
-7. 进入下一个 hash 节点
+3. policy 使用本次访问前的历史统计做决策
+4. 执行 READ、admission 和可能的 segment eviction/write/trim/prune
+5. 更新节点访问统计
+6. 向全部 policy 发送 access-complete 通知
+7. 更新全局 metrics，再进入下一个 hash 节点
 ```
+
+正在 admission 的当前节点在本次访问结束前受到结构保护，避免嵌套 storage eviction 在
+它获得内存驻留前将其 prune。该保护不构成新的介质驻留状态，也不跨访问保留。
 
 为了使 trace 可重复，所有由一次 access 派生的 I/O 使用同一 timestamp，并按以下顺序
 分配递增的 trace sequence：
@@ -248,25 +265,25 @@ READ/WRITE/TRIM 一旦写入 trace，DWPDSim 立即应用其逻辑结果，不�
 
 ## 7. Policy 接口
 
-policy 以 C++ 抽象基类表达，接收 NodeId 和只读的必要上下文。它们不直接修改树、地址
-表、metrics 或 trace。引擎信任内置 policy 遵守接口约定，不在每次调用前后复制状态
-进行防御性校验。
+policy 以 C++ 抽象基类表达。所有决策接口显式接收 `const RadixTree&`，可读取拓扑、
+驻留状态和历史访问统计，但不能修改树、地址表、metrics 或 trace，也不能跨调用保留
+`Node&`/`Node*`。引擎信任内置 policy 遵守接口约定，不复制全树状态进行防御性校验。
 
 ### 7.1 MemoryPolicy
 
 职责：
 
 - storage hit 后是否提升到内存；
-- 内存满时选择一个 victim；
-- 无盘上副本的 victim 是丢弃还是写盘；
+- 内存满时选择一个 segment 端点；
+- segment 内无盘上副本的 block 是丢弃还是写盘；
 - 维护算法自身的访问和驻留顺序。
 
 最小接口：
 
 ```text
-admit_storage_hit(context) -> bool
-choose_victim(context) -> NodeId
-eviction_action(victim, context) -> DROP | PERSIST
+admit_storage_hit(context, node, tree) -> bool
+choose_victim(context, tree) -> NodeId
+eviction_action(victim, context, tree) -> DROP | PERSIST
 on_memory_insert(node_id)
 on_memory_access(node_id)
 on_memory_remove(node_id)
@@ -280,7 +297,7 @@ global miss 不调用 `admit_storage_hit`，而是直接 admission。第一版�
 仅在 MemoryPolicy 已决定 `PERSIST` 时调用：
 
 ```text
-place(node, storage_summary) -> Placement {
+place(node, context, tree, storage_summary) -> Placement {
     medium: SLC | TLC
     stream_id: uint32
 }
@@ -294,13 +311,17 @@ place(node, storage_summary) -> Placement {
 当 placement 选择的介质没有空闲地址时调用：
 
 ```text
-choose_victim(medium, incoming_node) -> NodeId
+choose_victim(medium, incoming_node, context, tree) -> NodeId
 on_storage_read(node_id, medium)
 on_storage_write(node_id, medium)
 on_storage_remove(node_id, medium)
 ```
 
-第一版内置每个介质独立的 LRU。policy 必须只返回当前位于目标介质的节点。
+内置实现为每个介质维护独立 LRU。返回端点对应的 segment 必须与目标介质存在非空交集。
+
+三类 policy 都接收 `on_node_created`、`on_node_removed` 和 `on_access_complete` 通知。
+创建通知发生在 edge 加入后且决策前；删除通知发生在 edge 移除和 parent child count 更新后、
+内部 slot 回收前；访问完成通知发生在本次节点统计更新后。
 
 ## 8. SLC/TLC 与地址管理
 
@@ -322,8 +343,8 @@ MediumConfig {
 WRITE 从空闲集合取得一个 slot。TRIM 后 slot 立即可重用。stream 只是写入 trace 的
 分类信息，不切分物理容量，也不建立 chunk。
 
-如果目标介质已满，只淘汰一个 block 即可完成一次固定大小 block 的写入。第一版不支持
-一个 KV block 拆成多个不同地址的 I/O。
+如果目标介质已满，一次 segment 淘汰可以释放多个 block slot，多余地址保留在空闲集合。
+单个 KV block 仍不拆成多个不同地址的 I/O。
 
 ## 9. 通用 trace
 
@@ -363,7 +384,7 @@ timestamp unit、介质容量和 trace schema version，转换脚本据此生成
 ### 内存行为
 
 - storage hit 后 promote/bypass 数；
-- 内存淘汰总数；
+- 内存淘汰 segment 数和实际 block 数；
 - 已有盘上副本而直接移除的数量；
 - DROP 数；
 - PERSIST 数；
@@ -371,11 +392,11 @@ timestamp unit、介质容量和 trace schema version，转换脚本据此生成
 
 ### 存储与 trace
 
-- SLC/TLC 各自的 READ、WRITE、TRIM 数和字节数；
+- SLC/TLC 各自的淘汰 segment/block 数，以及 READ、WRITE、TRIM 数和字节数；
 - 每个 stream 的 WRITE 数和字节数；
 - SLC/TLC 当前和峰值驻留 block 数；
 - 同时位于内存和某个 SSD 的 block 数；
-- 当前树节点总数。
+- 当前树节点总数、累计创建节点数和累计删除节点数。
 
 所有 rate 在生成 snapshot 时由计数计算。DWPDSim 不输出 SSD 物理写入、GC、擦除、
 写放大或 DWPD；这些属于下游 SSD 仿真和分析。
@@ -471,16 +492,18 @@ metrics 分析，不依赖日志。
 
 ### 13.1 C++ 模块集成测试
 
-- 两条请求共享前缀时复用相同节点，不同 parent 下相同 hash 产生不同节点；
+- NodeId 等于全局唯一输入 hash，root 不占用输入 hash；
 - memory hit、SLC hit、TLC hit、global miss 四种路径；
 - global miss 强制进入内存；
 - storage hit 的 promote 和 bypass；
-- 内存 victim 已有盘上副本时不重复 WRITE；
-- 无盘副本 victim 的 DROP 和 PERSIST；
+- memory segment 中已有盘上副本的 block 不重复 WRITE；
+- memory segment 中无盘副本 block 的 DROP 和 PERSIST；
 - placement 正确选择 SLC/TLC 和 stream；
-- 目标介质写满后按 `TRIM -> WRITE` 顺序执行；
+- 目标介质写满后只对 segment 的目标介质子集执行逐 block `TRIM -> WRITE`；
 - 盘上 victim 仍在内存时只清除 storage location；
-- metrics 与生成的 trace 数量一致。
+- 无驻留 leaf 删除、递归 prune 和相同 hash 冷启动；
+- policy 决策前和访问完成后的统计时序；
+- segment/block metrics 与生成的逐 block trace 数量一致。
 
 ### 13.2 Python 功能测试
 
@@ -501,7 +524,7 @@ GC、transfer 或防御性 rollback 行为。
 - trace 写出吞吐量。
 
 在拿到实测数据前不预设没有依据的吞吐数字。若唯一前缀节点接近数亿，内存会成为主要
-约束；第一版先通过连续的 C++ node vector 和基准数据量化，不提前引入 mmap、分布式
+约束；当前先通过连续的 C++ NodeRecord vector 和基准数据量化，不提前引入 mmap、分布式
 执行或外存树。
 
 ## 14. 明确不做的内容

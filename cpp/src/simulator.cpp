@@ -35,10 +35,23 @@ void Simulator::process_request(
     last_timestamp_ = timestamp;
     metrics_.record_request(timestamp);
 
-    NodeId parent_id = kRootNodeId;
+    std::optional<NodeId> parent_id;
     const std::uint64_t request_index = metrics_.request_count - 1;
     for (std::size_t position = 0; position < hash_count; ++position) {
-        const NodeId node_id = tree_.get_or_create(parent_id, hash_ids[position], timestamp).first;
+        const auto [node_id, created] = parent_id.has_value()
+                                            ? tree_.get_or_create(
+                                                  *parent_id,
+                                                  hash_ids[position],
+                                                  timestamp
+                                              )
+                                            : tree_.get_or_create_root(
+                                                  hash_ids[position],
+                                                  timestamp
+                                              );
+        if (created) {
+            ++metrics_.tree_nodes_created;
+            notify_node_created(node_id, parent_id);
+        }
         const AccessContext context{
             timestamp,
             next_access_sequence_++,
@@ -109,6 +122,7 @@ SimulationConfig Simulator::validate_config(SimulationConfig config) {
 }
 
 void Simulator::process_access(const AccessContext& context) {
+    active_node_id_ = context.node_id;
     Node& node = tree_.node(context.node_id);
     AccessResult result;
 
@@ -129,7 +143,7 @@ void Simulator::process_access(const AccessContext& context) {
         metrics_.record_io(Operation::Read, location.medium, location.stream_id);
         storage_eviction_policy_->on_storage_read(context.node_id, location.medium);
 
-        if (memory_policy_->admit_storage_hit(context, node)) {
+        if (memory_policy_->admit_storage_hit(context, node, tree_)) {
             ++metrics_.storage_promotions;
             insert_into_memory(context.node_id, context);
         } else {
@@ -145,7 +159,9 @@ void Simulator::process_access(const AccessContext& context) {
         context.timestamp,
         result != AccessResult::GlobalMiss
     );
+    notify_access_complete(context, result);
     metrics_.record_access(result);
+    active_node_id_.reset();
 }
 
 void Simulator::insert_into_memory(NodeId node_id, const AccessContext& context) {
@@ -161,40 +177,58 @@ void Simulator::insert_into_memory(NodeId node_id, const AccessContext& context)
 }
 
 void Simulator::evict_from_memory(const AccessContext& context) {
-    const NodeId victim_id = memory_policy_->choose_victim(context);
-    Node& victim = tree_.node(victim_id);
-    ++metrics_.memory_evictions;
+    const NodeId endpoint = memory_policy_->choose_victim(context, tree_);
+    tree_.resolve_segment(endpoint, memory_segment_scratch_);
+    ++metrics_.memory_evicted_segments;
+    deferred_prune_scratch_.clear();
+    defer_storage_prune_ = true;
 
-    if (victim.on_storage) {
-        ++metrics_.memory_evictions_with_storage_copy;
-    } else {
-        const EvictionAction action = memory_policy_->eviction_action(victim, context);
-        if (action == EvictionAction::Persist) {
-            ++metrics_.memory_eviction_persists;
-            write_to_storage(victim_id, context);
-        } else {
-            ++metrics_.memory_eviction_drops;
+    for (NodeId victim_id : memory_segment_scratch_) {
+        Node& victim = tree_.node(victim_id);
+        if (!victim.in_memory) {
+            continue;
         }
+
+        ++metrics_.memory_evictions;
+        if (victim.on_storage) {
+            ++metrics_.memory_evictions_with_storage_copy;
+        } else {
+            const EvictionAction action = memory_policy_->eviction_action(
+                victim,
+                context,
+                tree_
+            );
+            if (action == EvictionAction::Persist) {
+                ++metrics_.memory_eviction_persists;
+                write_to_storage(victim_id, context);
+            } else {
+                ++metrics_.memory_eviction_drops;
+            }
+        }
+
+        metrics_.memory_removed(victim.on_storage);
+        victim.in_memory = false;
+        --memory_used_blocks_;
+        memory_policy_->on_memory_remove(victim_id);
     }
 
-    metrics_.memory_removed(victim.on_storage);
-    victim.in_memory = false;
-    --memory_used_blocks_;
-    memory_policy_->on_memory_remove(victim_id);
+    defer_storage_prune_ = false;
+    prune_segment(deferred_prune_scratch_);
+    prune_segment(memory_segment_scratch_);
 }
 
 void Simulator::write_to_storage(NodeId node_id, const AccessContext& context) {
     Node& node = tree_.node(node_id);
-    const Placement placement = placement_policy_->place(node, context, storage_.summary());
+    const Placement placement = placement_policy_->place(
+        node,
+        context,
+        tree_,
+        storage_.summary()
+    );
     MediumState& medium = storage_.medium(placement.medium);
 
     if (medium.full()) {
-        const NodeId victim_id = storage_eviction_policy_->choose_victim(
-            placement.medium,
-            node_id,
-            context
-        );
-        trim_from_storage(victim_id, context);
+        evict_from_storage(placement.medium, node_id, context);
     }
 
     const std::uint64_t address = medium.allocate();
@@ -210,6 +244,40 @@ void Simulator::write_to_storage(NodeId node_id, const AccessContext& context) {
         node.storage_location(),
         TraceReason::MemoryEviction
     );
+}
+
+void Simulator::evict_from_storage(
+    Medium medium,
+    NodeId incoming_node,
+    const AccessContext& context
+) {
+    const NodeId endpoint = storage_eviction_policy_->choose_victim(
+        medium,
+        incoming_node,
+        context,
+        tree_
+    );
+    tree_.resolve_segment(endpoint, storage_segment_scratch_);
+    ++metrics_.storage_evicted_segments[medium_index(medium)];
+
+    for (NodeId victim_id : storage_segment_scratch_) {
+        Node& victim = tree_.node(victim_id);
+        if (!victim.on_storage || victim.storage_medium != medium) {
+            continue;
+        }
+        ++metrics_.storage_evicted_blocks[medium_index(medium)];
+        trim_from_storage(victim_id, context);
+    }
+
+    if (defer_storage_prune_) {
+        deferred_prune_scratch_.insert(
+            deferred_prune_scratch_.end(),
+            storage_segment_scratch_.begin(),
+            storage_segment_scratch_.end()
+        );
+    } else {
+        prune_segment(storage_segment_scratch_);
+    }
 }
 
 void Simulator::trim_from_storage(NodeId node_id, const AccessContext& context) {
@@ -228,6 +296,55 @@ void Simulator::trim_from_storage(NodeId node_id, const AccessContext& context) 
     storage_.medium(location.medium).release(location.block_address);
     metrics_.storage_removed(location.medium, node.in_memory);
     node.clear_storage_location();
+}
+
+void Simulator::prune_segment(const std::vector<NodeId>& segment) {
+    for (NodeId node_id : segment) {
+        if (tree_.contains(node_id)) {
+            prune_from(node_id);
+        }
+    }
+}
+
+void Simulator::prune_from(NodeId node_id) {
+    std::optional<NodeId> current = node_id;
+    while (current.has_value() && tree_.contains(*current)) {
+        if (active_node_id_ == current) {
+            return;
+        }
+        const Node& node = tree_.node(*current);
+        if (node.in_memory || node.on_storage || tree_.child_count(*current) != 0) {
+            return;
+        }
+
+        const NodeId removed_id = *current;
+        const std::optional<NodeId> parent_id = tree_.detach_leaf(removed_id);
+        ++metrics_.tree_nodes_removed;
+        notify_node_removed(removed_id, parent_id);
+        tree_.release_detached(removed_id);
+        current = parent_id;
+    }
+}
+
+void Simulator::notify_node_created(NodeId node_id, std::optional<NodeId> parent_id) {
+    memory_policy_->on_node_created(node_id, parent_id, tree_);
+    placement_policy_->on_node_created(node_id, parent_id, tree_);
+    storage_eviction_policy_->on_node_created(node_id, parent_id, tree_);
+}
+
+void Simulator::notify_node_removed(NodeId node_id, std::optional<NodeId> parent_id) {
+    memory_policy_->on_node_removed(node_id, parent_id, tree_);
+    placement_policy_->on_node_removed(node_id, parent_id, tree_);
+    storage_eviction_policy_->on_node_removed(node_id, parent_id, tree_);
+}
+
+void Simulator::notify_access_complete(
+    const AccessContext& context,
+    AccessResult result
+) {
+    memory_policy_->on_access_complete(context, result, tree_);
+    placement_policy_->on_access_complete(context, result, tree_);
+    storage_eviction_policy_->on_access_complete(context, result, tree_);
 }
 
 }  // namespace dwpdsim

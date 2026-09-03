@@ -2,33 +2,44 @@
 
 #include <cstddef>
 
+#include "dwpdsim/radix_tree.hpp"
+
 namespace dwpdsim {
 
 LruMemoryPolicy::LruMemoryPolicy(bool admit_storage_hits, EvictionAction eviction_action)
     : admit_storage_hits_(admit_storage_hits), eviction_action_(eviction_action) {}
 
-bool LruMemoryPolicy::admit_storage_hit(const AccessContext& context, const Node& node) {
+bool LruMemoryPolicy::admit_storage_hit(
+    const AccessContext& context,
+    const Node& node,
+    const RadixTree& tree
+) {
     static_cast<void>(context);
     static_cast<void>(node);
+    static_cast<void>(tree);
     return admit_storage_hits_;
 }
 
-NodeId LruMemoryPolicy::choose_victim(const AccessContext& context) {
+NodeId LruMemoryPolicy::choose_victim(
+    const AccessContext& context,
+    const RadixTree& tree
+) {
     static_cast<void>(context);
-    return tail_;
+    return tree.segment_leaf_for(*tail_);
 }
 
 EvictionAction LruMemoryPolicy::eviction_action(
     const Node& victim,
-    const AccessContext& context
+    const AccessContext& context,
+    const RadixTree& tree
 ) {
     static_cast<void>(victim);
     static_cast<void>(context);
+    static_cast<void>(tree);
     return eviction_action_;
 }
 
 void LruMemoryPolicy::on_memory_insert(NodeId node_id) {
-    ensure_node(node_id);
     attach_front(node_id);
 }
 
@@ -41,19 +52,12 @@ void LruMemoryPolicy::on_memory_remove(NodeId node_id) {
     detach(node_id);
 }
 
-void LruMemoryPolicy::ensure_node(NodeId node_id) {
-    const auto required_size = static_cast<std::size_t>(node_id + 1);
-    if (links_.size() < required_size) {
-        links_.resize(required_size);
-    }
-}
-
 void LruMemoryPolicy::attach_front(NodeId node_id) noexcept {
-    Link& link = links_[static_cast<std::size_t>(node_id)];
-    link.previous = kInvalidNodeId;
+    Link& link = links_[node_id];
+    link.previous.reset();
     link.next = head_;
-    if (head_ != kInvalidNodeId) {
-        links_[static_cast<std::size_t>(head_)].previous = node_id;
+    if (head_.has_value()) {
+        links_.find(*head_)->second.previous = node_id;
     } else {
         tail_ = node_id;
     }
@@ -61,18 +65,19 @@ void LruMemoryPolicy::attach_front(NodeId node_id) noexcept {
 }
 
 void LruMemoryPolicy::detach(NodeId node_id) noexcept {
-    Link& link = links_[static_cast<std::size_t>(node_id)];
-    if (link.previous != kInvalidNodeId) {
-        links_[static_cast<std::size_t>(link.previous)].next = link.next;
+    const auto entry = links_.find(node_id);
+    const Link link = entry->second;
+    if (link.previous.has_value()) {
+        links_.find(*link.previous)->second.next = link.next;
     } else {
         head_ = link.next;
     }
-    if (link.next != kInvalidNodeId) {
-        links_[static_cast<std::size_t>(link.next)].previous = link.previous;
+    if (link.next.has_value()) {
+        links_.find(*link.next)->second.previous = link.previous;
     } else {
         tail_ = link.previous;
     }
-    link = Link{};
+    links_.erase(entry);
 }
 
 FixedPlacementPolicy::FixedPlacementPolicy(Medium medium, std::uint32_t stream_id)
@@ -81,10 +86,12 @@ FixedPlacementPolicy::FixedPlacementPolicy(Medium medium, std::uint32_t stream_i
 Placement FixedPlacementPolicy::place(
     const Node& node,
     const AccessContext& context,
+    const RadixTree& tree,
     const StorageSummary& storage
 ) {
     static_cast<void>(node);
     static_cast<void>(context);
+    static_cast<void>(tree);
     static_cast<void>(storage);
     return placement_;
 }
@@ -99,10 +106,12 @@ RatioPlacementPolicy::RatioPlacementPolicy(
 Placement RatioPlacementPolicy::place(
     const Node& node,
     const AccessContext& context,
+    const RadixTree& tree,
     const StorageSummary& storage
 ) {
     static_cast<void>(node);
     static_cast<void>(context);
+    static_cast<void>(tree);
     static_cast<void>(storage);
 
     const std::uint64_t next_total = write_counts_[0] + write_counts_[1] + 1;
@@ -120,11 +129,12 @@ Placement RatioPlacementPolicy::place(
 NodeId LruStorageEvictionPolicy::choose_victim(
     Medium medium,
     NodeId incoming_node,
-    const AccessContext& context
+    const AccessContext& context,
+    const RadixTree& tree
 ) {
     static_cast<void>(incoming_node);
     static_cast<void>(context);
-    return tails_[medium_index(medium)];
+    return tree.segment_leaf_for(*tails_[medium_index(medium)]);
 }
 
 void LruStorageEvictionPolicy::on_storage_read(NodeId node_id, Medium medium) {
@@ -133,7 +143,6 @@ void LruStorageEvictionPolicy::on_storage_read(NodeId node_id, Medium medium) {
 }
 
 void LruStorageEvictionPolicy::on_storage_write(NodeId node_id, Medium medium) {
-    ensure_node(node_id);
     attach_front(node_id, medium);
 }
 
@@ -142,21 +151,14 @@ void LruStorageEvictionPolicy::on_storage_remove(NodeId node_id, Medium medium) 
     detach(node_id);
 }
 
-void LruStorageEvictionPolicy::ensure_node(NodeId node_id) {
-    const auto required_size = static_cast<std::size_t>(node_id + 1);
-    if (links_.size() < required_size) {
-        links_.resize(required_size);
-    }
-}
-
 void LruStorageEvictionPolicy::attach_front(NodeId node_id, Medium medium) noexcept {
     const std::size_t index = medium_index(medium);
-    Link& link = links_[static_cast<std::size_t>(node_id)];
-    link.previous = kInvalidNodeId;
+    Link& link = links_[node_id];
+    link.previous.reset();
     link.next = heads_[index];
     link.medium = medium;
-    if (heads_[index] != kInvalidNodeId) {
-        links_[static_cast<std::size_t>(heads_[index])].previous = node_id;
+    if (heads_[index].has_value()) {
+        links_.find(*heads_[index])->second.previous = node_id;
     } else {
         tails_[index] = node_id;
     }
@@ -164,19 +166,20 @@ void LruStorageEvictionPolicy::attach_front(NodeId node_id, Medium medium) noexc
 }
 
 void LruStorageEvictionPolicy::detach(NodeId node_id) noexcept {
-    Link& link = links_[static_cast<std::size_t>(node_id)];
+    const auto entry = links_.find(node_id);
+    const Link link = entry->second;
     const std::size_t index = medium_index(link.medium);
-    if (link.previous != kInvalidNodeId) {
-        links_[static_cast<std::size_t>(link.previous)].next = link.next;
+    if (link.previous.has_value()) {
+        links_.find(*link.previous)->second.next = link.next;
     } else {
         heads_[index] = link.next;
     }
-    if (link.next != kInvalidNodeId) {
-        links_[static_cast<std::size_t>(link.next)].previous = link.previous;
+    if (link.next.has_value()) {
+        links_.find(*link.next)->second.previous = link.previous;
     } else {
         tails_[index] = link.previous;
     }
-    link = Link{};
+    links_.erase(entry);
 }
 
 }  // namespace dwpdsim

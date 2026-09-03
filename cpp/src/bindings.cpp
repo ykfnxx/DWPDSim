@@ -122,6 +122,8 @@ py::dict medium_metrics(
     result["reads"] = blocks_and_bytes(io.reads, block_size);
     result["writes"] = blocks_and_bytes(io.writes, block_size);
     result["trims"] = blocks_and_bytes(io.trims, block_size);
+    result["evicted_segments"] = metrics.storage_evicted_segments[index];
+    result["evicted_blocks"] = metrics.storage_evicted_blocks[index];
     result["stream_writes"] = std::move(streams);
     return result;
 }
@@ -170,6 +172,8 @@ py::dict simulator_stats(const Simulator& simulator) {
     memory["storage_promotions"] = metrics.storage_promotions;
     memory["storage_bypasses"] = metrics.storage_bypasses;
     memory["evictions"] = metrics.memory_evictions;
+    memory["evicted_segments"] = metrics.memory_evicted_segments;
+    memory["evicted_blocks"] = metrics.memory_evictions;
     memory["evictions_with_storage_copy"] = metrics.memory_evictions_with_storage_copy;
     memory["eviction_drops"] = metrics.memory_eviction_drops;
     memory["eviction_persists"] = metrics.memory_eviction_persists;
@@ -180,7 +184,9 @@ py::dict simulator_stats(const Simulator& simulator) {
     storage["duplicated_blocks"] = metrics.duplicated_blocks;
 
     py::dict tree;
-    tree["nodes"] = simulator.tree().size() - 1;
+    tree["nodes"] = simulator.tree().size();
+    tree["nodes_created"] = metrics.tree_nodes_created;
+    tree["nodes_removed"] = metrics.tree_nodes_removed;
 
     py::dict trace;
     trace["schema_version"] = 1;
@@ -205,7 +211,7 @@ PYBIND11_MODULE(_core, module) {
     using namespace dwpdsim;
 
     module.doc() = "C++ core for DWPDSim";
-    module.attr("CORE_VERSION") = "0.3.0";
+    module.attr("CORE_VERSION") = "0.4.0";
 
     py::class_<MediumConfig>(module, "MediumConfig")
         .def(py::init<>())
@@ -328,7 +334,7 @@ PYBIND11_MODULE(_core, module) {
         .def("stats", &simulator_stats)
         .def("finish", &Simulator::finish, py::call_guard<py::gil_scoped_release>())
         .def_property_readonly("node_count", [](const Simulator& simulator) {
-            return simulator.tree().size() - 1;
+            return simulator.tree().size();
         })
         .def_property_readonly("trace_event_count", &Simulator::trace_event_count);
 }

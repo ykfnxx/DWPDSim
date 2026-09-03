@@ -2,7 +2,8 @@
 
 DWPDSim replays KV cache requests across memory and peer SLC/TLC media, producing
 cache metrics and generic READ/WRITE/TRIM traces. Read [README.md](README.md) for usage
-and [.design/rewrite-design.md](.design/rewrite-design.md) for detailed semantics.
+and [.design/rewrite-design.md](.design/rewrite-design.md) plus
+[.design/segment-policy-design.md](.design/segment-policy-design.md) for detailed semantics.
 
 ## Architecture and invariants
 
@@ -10,13 +11,22 @@ and [.design/rewrite-design.md](.design/rewrite-design.md) for detailed semantic
   dataset adaptation, batching, and results. Large inputs use contiguous `uint64`
   buffers with `process_batch`; preserve equivalence with sequential `process` calls.
 - `Simulator` coordinates transitions. `RadixTree` owns node state; `StorageState` owns
-  capacity and addresses. Policies decide without mutating shared state or outputs.
-  Implement hot-path policies in C++; do not add per-block Python callbacks.
-- Node identity is `(parent_node_id, hash_id)`. Preserve repeated hashes and input order;
-  timestamps are nondecreasing across calls and batches. Replay each simulator serially.
+  capacity and addresses. Policies receive a read-only tree and decide without mutating
+  shared state or outputs. Implement hot-path policies in C++; do not add per-block
+  Python callbacks.
+- `NodeId` is the globally unique input `hash_id`; parent links express topology only.
+  The root uses an internal slot and reserves no input hash. Preserve repeated accesses
+  and input order; timestamps are nondecreasing across calls and batches. Replay each
+  simulator serially.
+- Memory and storage policies choose radix segments. The simulator snapshots the global
+  segment and operates on its target-medium subset at block granularity. Memory blocks
+  with SSD copies do not produce duplicate WRITE; storage eviction emits every selected
+  TRIM before the incoming WRITE.
+- A node is pruned only when it has no memory or storage copy and no children. Deletion
+  discards node statistics and policy-derived state; reappearance of the same hash starts
+  a cold lifecycle with the same logical `NodeId`.
 - Memory hits produce no I/O. Global misses enter memory without READ. Storage hits
-  always READ before any promotion-induced eviction. An existing SSD copy prevents a
-  duplicate WRITE on memory eviction; storage eviction emits TRIM before WRITE.
+  always READ before any promotion-induced eviction.
 - SLC and TLC are peers with no automatic migration. A node may have a memory copy and
   at most one SSD copy. SSD internals, latency, write amplification, and DWPD belong in
   downstream adapters/analysis, outside the cache core.

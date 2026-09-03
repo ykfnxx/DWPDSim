@@ -64,10 +64,14 @@ def test_full_cache_flow_generates_consistent_metrics_and_trace(tmp_path):
         "global_miss_rate": 0.5,
     }
     assert stats["memory"]["evictions"] == 2
+    assert stats["memory"]["evicted_segments"] == 2
+    assert stats["memory"]["evicted_blocks"] == 2
     assert stats["memory"]["eviction_persists"] == 2
     assert stats["storage"]["slc"]["reads"]["blocks"] == 1
     assert stats["storage"]["slc"]["writes"]["blocks"] == 2
     assert stats["storage"]["slc"]["trims"]["blocks"] == 1
+    assert stats["storage"]["slc"]["evicted_segments"] == 1
+    assert stats["storage"]["slc"]["evicted_blocks"] == 1
     assert stats["storage"]["slc"]["stream_writes"]["1"]["blocks"] == 2
 
     rows = read_trace(trace_path)
@@ -82,7 +86,7 @@ def test_full_cache_flow_generates_consistent_metrics_and_trace(tmp_path):
 
 
 def test_batch_and_request_interfaces_share_prefixes_identically(tmp_path):
-    requests = [Request(10, [1, 2]), Request(20, [1, 3]), Request(30, [4, 2])]
+    requests = [Request(10, [1, 2]), Request(20, [1, 3]), Request(30, [4, 5])]
 
     request_simulator = DWPDSimulator(
         config(memory_blocks=8, slc_blocks=8, tlc_blocks=8),
@@ -98,7 +102,7 @@ def test_batch_and_request_interfaces_share_prefixes_identically(tmp_path):
     batch_simulator.process_batch(
         np.asarray([10, 20, 30], dtype=np.uint64),
         np.asarray([0, 2, 4, 6], dtype=np.uint64),
-        np.asarray([1, 2, 1, 3, 4, 2], dtype=np.uint64),
+        np.asarray([1, 2, 1, 3, 4, 5], dtype=np.uint64),
     )
     batch_simulator.finish()
 
@@ -168,7 +172,32 @@ def test_drop_policy_recomputes_an_absent_tree_node(tmp_path):
     assert stats["accesses"]["global_misses"] == 3
     assert stats["memory"]["eviction_drops"] == 2
     assert stats["trace"]["events"] == 0
-    assert simulator.node_count == 2
+    assert simulator.node_count == 1
+    assert stats["tree"] == {"nodes": 1, "nodes_created": 3, "nodes_removed": 2}
+
+
+def test_memory_and_storage_eviction_use_segment_batches(tmp_path):
+    simulator = DWPDSimulator(
+        config(memory_blocks=3, slc_blocks=3),
+        tmp_path / "segments.csv",
+        placement_policy=PlacementPolicyConfig(fixed_medium="slc"),
+    )
+
+    simulator.process(0, [1, 2, 3])
+    simulator.process(1, [4])
+    assert simulator.stats()["memory"]["evicted_segments"] == 1
+    assert simulator.stats()["memory"]["evicted_blocks"] == 3
+
+    simulator.process(2, [5])
+    simulator.process(3, [6])
+    simulator.process(4, [7])
+    simulator.finish()
+
+    stats = simulator.stats()
+    assert stats["storage"]["slc"]["evicted_segments"] == 1
+    assert stats["storage"]["slc"]["evicted_blocks"] == 3
+    operations = [row["operation"] for row in read_trace(tmp_path / "segments.csv")]
+    assert operations == ["WRITE"] * 3 + ["TRIM"] * 3 + ["WRITE"]
 
 
 def test_ratio_placement_distributes_media_and_streams(tmp_path):

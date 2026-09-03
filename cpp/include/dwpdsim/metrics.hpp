@@ -38,6 +38,7 @@ class MetricsCollector {
 
     std::uint64_t storage_promotions = 0;
     std::uint64_t storage_bypasses = 0;
+    std::uint64_t memory_evicted_segments = 0;
     std::uint64_t memory_evictions = 0;
     std::uint64_t memory_evictions_with_storage_copy = 0;
     std::uint64_t memory_eviction_drops = 0;
@@ -49,7 +50,12 @@ class MetricsCollector {
 
     std::array<std::uint64_t, 2> storage_resident_blocks{};
     std::array<std::uint64_t, 2> peak_storage_resident_blocks{};
+    std::array<std::uint64_t, 2> storage_evicted_segments{};
+    std::array<std::uint64_t, 2> storage_evicted_blocks{};
     std::array<MediumIoCounters, 2> io;
+
+    std::uint64_t tree_nodes_created = 0;
+    std::uint64_t tree_nodes_removed = 0;
 
     std::optional<Timestamp> start_timestamp;
     std::optional<Timestamp> end_timestamp;

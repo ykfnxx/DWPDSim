@@ -50,7 +50,17 @@ class Simulator {
     void insert_into_memory(NodeId node_id, const AccessContext& context);
     void evict_from_memory(const AccessContext& context);
     void write_to_storage(NodeId node_id, const AccessContext& context);
+    void evict_from_storage(
+        Medium medium,
+        NodeId incoming_node,
+        const AccessContext& context
+    );
     void trim_from_storage(NodeId node_id, const AccessContext& context);
+    void prune_segment(const std::vector<NodeId>& segment);
+    void prune_from(NodeId node_id);
+    void notify_node_created(NodeId node_id, std::optional<NodeId> parent_id);
+    void notify_node_removed(NodeId node_id, std::optional<NodeId> parent_id);
+    void notify_access_complete(const AccessContext& context, AccessResult result);
 
     SimulationConfig config_;
     std::uint64_t memory_capacity_blocks_;
@@ -63,7 +73,12 @@ class Simulator {
     MetricsCollector metrics_;
     TraceWriter trace_writer_;
     std::optional<Timestamp> last_timestamp_;
+    std::optional<NodeId> active_node_id_;
     std::uint64_t next_access_sequence_ = 0;
+    std::vector<NodeId> memory_segment_scratch_;
+    std::vector<NodeId> storage_segment_scratch_;
+    std::vector<NodeId> deferred_prune_scratch_;
+    bool defer_storage_prune_ = false;
 };
 
 }  // namespace dwpdsim

@@ -3,15 +3,16 @@
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <optional>
 
 namespace dwpdsim {
 
 using HashId = std::uint64_t;
-using NodeId = std::uint64_t;
+using NodeId = HashId;
+using NodeSlot = std::uint32_t;
 using Timestamp = std::uint64_t;
 
-inline constexpr NodeId kRootNodeId = 0;
-inline constexpr NodeId kInvalidNodeId = std::numeric_limits<NodeId>::max();
+inline constexpr NodeSlot kInvalidNodeSlot = std::numeric_limits<NodeSlot>::max();
 
 enum class Medium : std::uint8_t {
     Slc,
@@ -49,7 +50,6 @@ struct StorageLocation {
 };
 
 struct Node {
-    NodeId parent_id = kInvalidNodeId;
     HashId hash_id = 0;
     Timestamp first_seen_timestamp = 0;
     Timestamp last_access_timestamp = 0;
@@ -84,7 +84,7 @@ struct AccessContext {
     std::uint64_t request_index;
     std::uint64_t position;
     NodeId node_id;
-    NodeId parent_id;
+    std::optional<NodeId> parent_id;
 };
 
 struct Placement {

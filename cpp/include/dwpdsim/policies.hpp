@@ -2,11 +2,14 @@
 
 #include <array>
 #include <cstdint>
-#include <vector>
+#include <optional>
+#include <unordered_map>
 
 #include "dwpdsim/types.hpp"
 
 namespace dwpdsim {
+
+class RadixTree;
 
 struct MediumSummary {
     std::uint64_t capacity_blocks;
@@ -23,16 +26,40 @@ class MemoryPolicy {
   public:
     virtual ~MemoryPolicy() = default;
 
-    virtual bool admit_storage_hit(const AccessContext& context, const Node& node) = 0;
-    virtual NodeId choose_victim(const AccessContext& context) = 0;
+    virtual bool admit_storage_hit(
+        const AccessContext& context,
+        const Node& node,
+        const RadixTree& tree
+    ) = 0;
+    virtual NodeId choose_victim(
+        const AccessContext& context,
+        const RadixTree& tree
+    ) = 0;
     virtual EvictionAction eviction_action(
         const Node& victim,
-        const AccessContext& context
+        const AccessContext& context,
+        const RadixTree& tree
     ) = 0;
 
     virtual void on_memory_insert(NodeId node_id) = 0;
     virtual void on_memory_access(NodeId node_id) = 0;
     virtual void on_memory_remove(NodeId node_id) = 0;
+
+    virtual void on_node_created(
+        NodeId,
+        std::optional<NodeId>,
+        const RadixTree&
+    ) {}
+    virtual void on_node_removed(
+        NodeId,
+        std::optional<NodeId>,
+        const RadixTree&
+    ) {}
+    virtual void on_access_complete(
+        const AccessContext&,
+        AccessResult,
+        const RadixTree&
+    ) {}
 };
 
 class WritePlacementPolicy {
@@ -42,8 +69,25 @@ class WritePlacementPolicy {
     virtual Placement place(
         const Node& node,
         const AccessContext& context,
+        const RadixTree& tree,
         const StorageSummary& storage
     ) = 0;
+
+    virtual void on_node_created(
+        NodeId,
+        std::optional<NodeId>,
+        const RadixTree&
+    ) {}
+    virtual void on_node_removed(
+        NodeId,
+        std::optional<NodeId>,
+        const RadixTree&
+    ) {}
+    virtual void on_access_complete(
+        const AccessContext&,
+        AccessResult,
+        const RadixTree&
+    ) {}
 };
 
 class StorageEvictionPolicy {
@@ -53,12 +97,29 @@ class StorageEvictionPolicy {
     virtual NodeId choose_victim(
         Medium medium,
         NodeId incoming_node,
-        const AccessContext& context
+        const AccessContext& context,
+        const RadixTree& tree
     ) = 0;
 
     virtual void on_storage_read(NodeId node_id, Medium medium) = 0;
     virtual void on_storage_write(NodeId node_id, Medium medium) = 0;
     virtual void on_storage_remove(NodeId node_id, Medium medium) = 0;
+
+    virtual void on_node_created(
+        NodeId,
+        std::optional<NodeId>,
+        const RadixTree&
+    ) {}
+    virtual void on_node_removed(
+        NodeId,
+        std::optional<NodeId>,
+        const RadixTree&
+    ) {}
+    virtual void on_access_complete(
+        const AccessContext&,
+        AccessResult,
+        const RadixTree&
+    ) {}
 };
 
 class LruMemoryPolicy final : public MemoryPolicy {
@@ -68,11 +129,19 @@ class LruMemoryPolicy final : public MemoryPolicy {
         EvictionAction eviction_action = EvictionAction::Persist
     );
 
-    bool admit_storage_hit(const AccessContext& context, const Node& node) override;
-    NodeId choose_victim(const AccessContext& context) override;
+    bool admit_storage_hit(
+        const AccessContext& context,
+        const Node& node,
+        const RadixTree& tree
+    ) override;
+    NodeId choose_victim(
+        const AccessContext& context,
+        const RadixTree& tree
+    ) override;
     EvictionAction eviction_action(
         const Node& victim,
-        const AccessContext& context
+        const AccessContext& context,
+        const RadixTree& tree
     ) override;
 
     void on_memory_insert(NodeId node_id) override;
@@ -81,19 +150,18 @@ class LruMemoryPolicy final : public MemoryPolicy {
 
   private:
     struct Link {
-        NodeId previous = kInvalidNodeId;
-        NodeId next = kInvalidNodeId;
+        std::optional<NodeId> previous;
+        std::optional<NodeId> next;
     };
 
-    void ensure_node(NodeId node_id);
     void attach_front(NodeId node_id) noexcept;
     void detach(NodeId node_id) noexcept;
 
     bool admit_storage_hits_;
     EvictionAction eviction_action_;
-    std::vector<Link> links_;
-    NodeId head_ = kInvalidNodeId;
-    NodeId tail_ = kInvalidNodeId;
+    std::unordered_map<NodeId, Link> links_;
+    std::optional<NodeId> head_;
+    std::optional<NodeId> tail_;
 };
 
 class FixedPlacementPolicy final : public WritePlacementPolicy {
@@ -103,6 +171,7 @@ class FixedPlacementPolicy final : public WritePlacementPolicy {
     Placement place(
         const Node& node,
         const AccessContext& context,
+        const RadixTree& tree,
         const StorageSummary& storage
     ) override;
 
@@ -121,6 +190,7 @@ class RatioPlacementPolicy final : public WritePlacementPolicy {
     Placement place(
         const Node& node,
         const AccessContext& context,
+        const RadixTree& tree,
         const StorageSummary& storage
     ) override;
 
@@ -136,7 +206,8 @@ class LruStorageEvictionPolicy final : public StorageEvictionPolicy {
     NodeId choose_victim(
         Medium medium,
         NodeId incoming_node,
-        const AccessContext& context
+        const AccessContext& context,
+        const RadixTree& tree
     ) override;
 
     void on_storage_read(NodeId node_id, Medium medium) override;
@@ -145,18 +216,17 @@ class LruStorageEvictionPolicy final : public StorageEvictionPolicy {
 
   private:
     struct Link {
-        NodeId previous = kInvalidNodeId;
-        NodeId next = kInvalidNodeId;
+        std::optional<NodeId> previous;
+        std::optional<NodeId> next;
         Medium medium = Medium::Slc;
     };
 
-    void ensure_node(NodeId node_id);
     void attach_front(NodeId node_id, Medium medium) noexcept;
     void detach(NodeId node_id) noexcept;
 
-    std::vector<Link> links_;
-    std::array<NodeId, 2> heads_{kInvalidNodeId, kInvalidNodeId};
-    std::array<NodeId, 2> tails_{kInvalidNodeId, kInvalidNodeId};
+    std::unordered_map<NodeId, Link> links_;
+    std::array<std::optional<NodeId>, 2> heads_;
+    std::array<std::optional<NodeId>, 2> tails_;
 };
 
 }  // namespace dwpdsim

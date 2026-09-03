@@ -1,7 +1,6 @@
 #pragma once
 
 #include <cstddef>
-#include <cstdint>
 #include <optional>
 #include <unordered_map>
 #include <utility>
@@ -11,41 +10,64 @@
 
 namespace dwpdsim {
 
-struct EdgeKey {
-    NodeId parent_id;
-    HashId hash_id;
-
-    bool operator==(const EdgeKey& other) const noexcept {
-        return parent_id == other.parent_id && hash_id == other.hash_id;
-    }
-};
-
-struct EdgeKeyHash {
-    std::size_t operator()(const EdgeKey& key) const noexcept;
-};
-
 class RadixTree {
   public:
     RadixTree();
 
+    std::pair<NodeId, bool> get_or_create_root(HashId hash_id, Timestamp timestamp);
     std::pair<NodeId, bool> get_or_create(
         NodeId parent_id,
         HashId hash_id,
         Timestamp timestamp
     );
 
+    std::optional<NodeId> find(HashId hash_id) const noexcept;
+    std::optional<NodeId> find_root_child(HashId hash_id) const noexcept;
     std::optional<NodeId> find_child(NodeId parent_id, HashId hash_id) const;
 
     Node& node(NodeId node_id) noexcept;
     const Node& node(NodeId node_id) const noexcept;
 
+    bool contains(NodeId node_id) const noexcept;
+    std::optional<NodeId> parent(NodeId node_id) const noexcept;
+    std::uint32_t child_count(NodeId node_id) const noexcept;
+    bool is_leaf(NodeId node_id) const noexcept;
+    NodeId segment_top(NodeId endpoint) const noexcept;
+    void resolve_segment(NodeId endpoint, std::vector<NodeId>& segment) const;
+    NodeId segment_leaf_for(NodeId node_id) const noexcept;
+
     void record_access(NodeId node_id, Timestamp timestamp, bool hit) noexcept;
+
+    std::optional<NodeId> detach_leaf(NodeId node_id);
+    void release_detached(NodeId node_id) noexcept;
 
     std::size_t size() const noexcept;
 
   private:
-    std::vector<Node> nodes_;
-    std::unordered_map<EdgeKey, NodeId, EdgeKeyHash> child_index_;
+    struct NodeRecord {
+        Node node;
+        NodeSlot parent = kInvalidNodeSlot;
+        NodeSlot first_child = kInvalidNodeSlot;
+        NodeSlot previous_sibling = kInvalidNodeSlot;
+        NodeSlot next_sibling = kInvalidNodeSlot;
+        std::uint32_t child_count = 0;
+    };
+
+    std::pair<NodeId, bool> get_or_create_at(
+        NodeSlot parent_slot,
+        HashId hash_id,
+        Timestamp timestamp
+    );
+    NodeSlot slot(NodeId node_id) const noexcept;
+    NodeId id(NodeSlot slot) const noexcept;
+
+    static constexpr NodeSlot kRootSlot = 0;
+
+    std::vector<NodeRecord> nodes_;
+    std::unordered_map<NodeId, NodeSlot> node_index_;
+    std::unordered_map<NodeId, NodeSlot> detached_index_;
+    std::vector<NodeSlot> free_slots_;
+    std::size_t active_nodes_ = 0;
 };
 
 }  // namespace dwpdsim
