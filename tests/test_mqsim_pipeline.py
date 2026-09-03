@@ -11,7 +11,7 @@ TRACE_FIELDS = [
     "timestamp",
     "request_sequence",
     "operation",
-    "medium",
+    "storage_tier",
     "stream_id",
     "offset_bytes",
     "length_bytes",
@@ -21,7 +21,7 @@ TRACE_FIELDS = [
 ]
 
 
-def test_conversion_generates_one_mqsim_flow_per_medium_stream(tmp_path):
+def test_conversion_generates_one_mqsim_flow_per_storage_tier_stream(tmp_path):
     trace_path = tmp_path / "dwpdsim.csv"
     metrics_path = tmp_path / "metrics.json"
     output_path = tmp_path / "mqsim"
@@ -60,8 +60,8 @@ def test_conversion_generates_one_mqsim_flow_per_medium_stream(tmp_path):
     )
 
     assert manifest["events"] == 7
-    assert manifest["media"]["slc"]["timestamp_origin"] == 100
-    assert [stream["dwpdsim_stream_id"] for stream in manifest["media"]["slc"]["streams"]] == [
+    assert manifest["tiers"]["slc"]["timestamp_origin"] == 100
+    assert [stream["dwpdsim_stream_id"] for stream in manifest["tiers"]["slc"]["streams"]] == [
         3,
         5,
     ]

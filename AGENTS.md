@@ -1,6 +1,6 @@
 # AGENTS.md
 
-DWPDSim replays KV cache requests across memory and SLC/TLC media, producing
+DWPDSim replays KV cache requests across memory and SLC/TLC tiers, producing
 cache metrics and generic READ/WRITE/TRIM traces. Read [README.md](README.md) for usage
 and [.design/rewrite-design.md](.design/rewrite-design.md) plus
 [.design/segment-policy-design.md](.design/segment-policy-design.md) for detailed semantics.
@@ -19,7 +19,7 @@ and [.design/rewrite-design.md](.design/rewrite-design.md) plus
   and input order; timestamps are nondecreasing across calls and batches. Replay each
   simulator serially.
 - Memory and storage policies choose radix segments. The simulator snapshots the global
-  segment and operates on its target-medium subset at block granularity. Memory blocks
+  segment and operates on its selected-tier subset at block granularity. Memory blocks
   with SSD copies do not produce duplicate WRITE. SLC eviction demotes its selected
   subset with a TLC WRITE followed by the source SLC TRIM for each block; TLC eviction
   drops its selected subset with TRIM before the incoming WRITE.

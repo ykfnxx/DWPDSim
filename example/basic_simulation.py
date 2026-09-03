@@ -4,10 +4,10 @@ from pathlib import Path
 
 from dwpdsim import (
     DWPDSimulator,
-    MediumConfig,
     PlacementPolicyConfig,
     Request,
     SimulationConfig,
+    StorageTierConfig,
 )
 
 MIB = 1024 * 1024
@@ -18,8 +18,8 @@ def main() -> None:
     config = SimulationConfig(
         block_size_bytes=BLOCK_SIZE,
         memory_capacity_bytes=2 * BLOCK_SIZE,
-        slc=MediumConfig(capacity_bytes=4 * BLOCK_SIZE, stream_count=2),
-        tlc=MediumConfig(capacity_bytes=8 * BLOCK_SIZE, stream_count=2),
+        slc=StorageTierConfig(capacity_bytes=4 * BLOCK_SIZE, stream_count=2),
+        tlc=StorageTierConfig(capacity_bytes=8 * BLOCK_SIZE, stream_count=2),
         timestamp_unit="us",
     )
 
@@ -30,7 +30,7 @@ def main() -> None:
         trace_path,
         placement_policy=PlacementPolicyConfig(
             kind="fixed",
-            fixed_medium="tlc",
+            fixed_tier="tlc",
             fixed_stream_id=0,
         ),
     ) as simulator:

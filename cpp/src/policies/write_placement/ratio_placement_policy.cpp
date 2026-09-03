@@ -24,15 +24,15 @@ Placement RatioPlacementPolicy::place(
 
     const std::uint64_t next_total = write_counts_[0] + write_counts_[1] + 1;
     const double target_slc_writes = static_cast<double>(next_total) * slc_ratio_;
-    const Medium medium = static_cast<double>(write_counts_[0]) < target_slc_writes
-                              ? Medium::Slc
-                              : Medium::Tlc;
-    ++write_counts_[medium_index(medium)];
-    return next_placement(medium);
+    const StorageTier tier = static_cast<double>(write_counts_[0]) < target_slc_writes
+                              ? StorageTier::Slc
+                              : StorageTier::Tlc;
+    ++write_counts_[storage_tier_index(tier)];
+    return next_placement(tier);
 }
 
-Placement RatioPlacementPolicy::place_on_medium(
-    Medium medium,
+Placement RatioPlacementPolicy::place_on_tier(
+    StorageTier tier,
     const Node& node,
     const AccessContext& context,
     const RadixTree& tree,
@@ -42,14 +42,14 @@ Placement RatioPlacementPolicy::place_on_medium(
     static_cast<void>(context);
     static_cast<void>(tree);
     static_cast<void>(storage);
-    return next_placement(medium);
+    return next_placement(tier);
 }
 
-Placement RatioPlacementPolicy::next_placement(Medium medium) {
-    const std::size_t index = medium_index(medium);
+Placement RatioPlacementPolicy::next_placement(StorageTier tier) {
+    const std::size_t index = storage_tier_index(tier);
     const std::uint32_t stream_id = next_stream_[index] % stream_counts_[index];
     ++next_stream_[index];
-    return Placement{medium, stream_id};
+    return Placement{tier, stream_id};
 }
 
 }  // namespace dwpdsim

@@ -2,8 +2,8 @@
 
 namespace dwpdsim {
 
-FixedPlacementPolicy::FixedPlacementPolicy(Medium medium, std::uint32_t stream_id)
-    : placement_{medium, stream_id} {}
+FixedPlacementPolicy::FixedPlacementPolicy(StorageTier tier, std::uint32_t stream_id)
+    : placement_{tier, stream_id} {}
 
 Placement FixedPlacementPolicy::place(
     const Node& node,
@@ -18,8 +18,8 @@ Placement FixedPlacementPolicy::place(
     return placement_;
 }
 
-Placement FixedPlacementPolicy::place_on_medium(
-    Medium medium,
+Placement FixedPlacementPolicy::place_on_tier(
+    StorageTier tier,
     const Node& node,
     const AccessContext& context,
     const RadixTree& tree,
@@ -29,8 +29,8 @@ Placement FixedPlacementPolicy::place_on_medium(
     static_cast<void>(context);
     static_cast<void>(tree);
     static_cast<void>(storage);
-    const std::uint32_t stream_id = medium == placement_.medium ? placement_.stream_id : 0;
-    return Placement{medium, stream_id};
+    const std::uint32_t stream_id = tier == placement_.tier ? placement_.stream_id : 0;
+    return Placement{tier, stream_id};
 }
 
 }  // namespace dwpdsim

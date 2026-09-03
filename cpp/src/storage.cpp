@@ -5,15 +5,18 @@
 
 namespace dwpdsim {
 
-MediumState::MediumState(const MediumConfig& config, std::uint64_t block_size_bytes)
+StorageTierState::StorageTierState(
+    const StorageTierConfig& config,
+    std::uint64_t block_size_bytes
+)
     : capacity_blocks_(config.capacity_bytes / block_size_bytes),
       stream_count_(config.stream_count) {}
 
-bool MediumState::full() const noexcept {
+bool StorageTierState::full() const noexcept {
     return used_blocks_ == capacity_blocks_;
 }
 
-std::uint64_t MediumState::allocate() noexcept {
+std::uint64_t StorageTierState::allocate() noexcept {
     std::uint64_t address;
     if (recycled_addresses_.empty()) {
         address = next_address_++;
@@ -26,47 +29,47 @@ std::uint64_t MediumState::allocate() noexcept {
     return address;
 }
 
-void MediumState::release(std::uint64_t block_address) noexcept {
+void StorageTierState::release(std::uint64_t block_address) noexcept {
     recycled_addresses_.push_back(block_address);
     --used_blocks_;
 }
 
-std::uint64_t MediumState::capacity_blocks() const noexcept {
+std::uint64_t StorageTierState::capacity_blocks() const noexcept {
     return capacity_blocks_;
 }
 
-std::uint64_t MediumState::used_blocks() const noexcept {
+std::uint64_t StorageTierState::used_blocks() const noexcept {
     return used_blocks_;
 }
 
-std::uint64_t MediumState::peak_used_blocks() const noexcept {
+std::uint64_t StorageTierState::peak_used_blocks() const noexcept {
     return peak_used_blocks_;
 }
 
-std::uint32_t MediumState::stream_count() const noexcept {
+std::uint32_t StorageTierState::stream_count() const noexcept {
     return stream_count_;
 }
 
 StorageState::StorageState(const SimulationConfig& config)
-    : media_{
-          MediumState(config.slc, config.block_size_bytes),
-          MediumState(config.tlc, config.block_size_bytes),
+    : tiers_{
+          StorageTierState(config.slc, config.block_size_bytes),
+          StorageTierState(config.tlc, config.block_size_bytes),
       } {}
 
-MediumState& StorageState::medium(Medium medium) noexcept {
-    return media_[medium_index(medium)];
+StorageTierState& StorageState::tier(StorageTier tier) noexcept {
+    return tiers_[storage_tier_index(tier)];
 }
 
-const MediumState& StorageState::medium(Medium medium) const noexcept {
-    return media_[medium_index(medium)];
+const StorageTierState& StorageState::tier(StorageTier tier) const noexcept {
+    return tiers_[storage_tier_index(tier)];
 }
 
 StorageSummary StorageState::summary() const noexcept {
-    const MediumState& slc = media_[0];
-    const MediumState& tlc = media_[1];
+    const StorageTierState& slc = tiers_[0];
+    const StorageTierState& tlc = tiers_[1];
     return StorageSummary{
-        MediumSummary{slc.capacity_blocks(), slc.used_blocks(), slc.stream_count()},
-        MediumSummary{tlc.capacity_blocks(), tlc.used_blocks(), tlc.stream_count()},
+        StorageTierSummary{slc.capacity_blocks(), slc.used_blocks(), slc.stream_count()},
+        StorageTierSummary{tlc.capacity_blocks(), tlc.used_blocks(), tlc.stream_count()},
     };
 }
 

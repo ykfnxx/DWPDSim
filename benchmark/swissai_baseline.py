@@ -12,9 +12,9 @@ import numpy as np
 
 from dwpdsim import (
     DWPDSimulator,
-    MediumConfig,
     PlacementPolicyConfig,
     SimulationConfig,
+    StorageTierConfig,
 )
 
 MIB = 1024 * 1024
@@ -30,8 +30,8 @@ def build_simulator(trace_path: Path) -> DWPDSimulator:
     config = SimulationConfig(
         block_size_bytes=BLOCK_SIZE_BYTES,
         memory_capacity_bytes=MEMORY_BLOCKS * BLOCK_SIZE_BYTES,
-        slc=MediumConfig(SLC_BLOCKS * BLOCK_SIZE_BYTES, stream_count=1),
-        tlc=MediumConfig(TLC_BLOCKS * BLOCK_SIZE_BYTES, stream_count=1),
+        slc=StorageTierConfig(SLC_BLOCKS * BLOCK_SIZE_BYTES, stream_count=1),
+        tlc=StorageTierConfig(TLC_BLOCKS * BLOCK_SIZE_BYTES, stream_count=1),
         timestamp_unit="us",
     )
     return DWPDSimulator(
@@ -39,7 +39,7 @@ def build_simulator(trace_path: Path) -> DWPDSimulator:
         trace_path,
         placement_policy=PlacementPolicyConfig(
             kind="fixed",
-            fixed_medium="tlc",
+            fixed_tier="tlc",
             fixed_stream_id=0,
         ),
     )

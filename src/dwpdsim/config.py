@@ -6,8 +6,8 @@ MIB = 1024 * 1024
 
 
 @dataclass(frozen=True, slots=True)
-class MediumConfig:
-    """Capacity and stream count for one SSD medium."""
+class StorageTierConfig:
+    """Capacity and stream count for one storage tier."""
 
     capacity_bytes: int
     stream_count: int
@@ -18,8 +18,8 @@ class SimulationConfig:
     """Fixed capacities and timestamp metadata for one simulation."""
 
     memory_capacity_bytes: int
-    slc: MediumConfig
-    tlc: MediumConfig
+    slc: StorageTierConfig
+    tlc: StorageTierConfig
     block_size_bytes: int = 8 * MIB
     timestamp_unit: str = "unspecified"
     progress_interval_requests: int = 0
@@ -39,7 +39,7 @@ class PlacementPolicyConfig:
     """Select fixed or ratio-based SLC/TLC write placement."""
 
     kind: str = "fixed"
-    fixed_medium: str = "tlc"
+    fixed_tier: str = "tlc"
     fixed_stream_id: int = 0
     slc_write_ratio: float = 0.0
 

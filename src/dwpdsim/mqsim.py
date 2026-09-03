@@ -1,4 +1,4 @@
-"""Convert DWPDSim traces, run MQSim per SSD medium, and collect results."""
+"""Convert DWPDSim traces, run MQSim per SSD tier, and collect results."""
 
 from __future__ import annotations
 
@@ -28,7 +28,7 @@ TIMESTAMP_TO_NANOSECONDS = {
 
 @dataclass
 class StreamTrace:
-    medium: str
+    tier: str
     source_stream_id: int
     path: Path
     block_size_bytes: int
@@ -43,13 +43,13 @@ class StreamTrace:
     @classmethod
     def open(
         cls,
-        medium: str,
+        tier: str,
         source_stream_id: int,
         path: Path,
         block_size_bytes: int,
     ) -> StreamTrace:
         return cls(
-            medium=medium,
+            tier=tier,
             source_stream_id=source_stream_id,
             path=path,
             block_size_bytes=block_size_bytes,
@@ -121,12 +121,12 @@ def _config_resources(config_path: Path) -> tuple[dict[str, str], int, int, floa
 
 
 def _write_workload(
-    medium_dir: Path,
+    tier_dir: Path,
     streams: list[StreamTrace],
     config_path: Path,
 ) -> tuple[Path, list[dict[str, object]]]:
     if len(streams) > MAX_MQSIM_FLOWS:
-        raise ValueError(f"MQSim supports at most {MAX_MQSIM_FLOWS} active flows per medium")
+        raise ValueError(f"MQSim supports at most {MAX_MQSIM_FLOWS} active flows per tier")
 
     resources, sectors_per_resource, resource_count, overprovisioning_ratio = _config_resources(
         config_path
@@ -143,7 +143,7 @@ def _write_workload(
         required_sectors = stream.next_slot * stream.block_size_bytes // SECTOR_SIZE_BYTES
         if required_sectors > sectors_per_flow:
             raise ValueError(
-                f"{stream.medium} stream {stream.source_stream_id} requires "
+                f"{stream.tier} stream {stream.source_stream_id} requires "
                 f"{required_sectors} sectors, MQSim config provides {sectors_per_flow}"
             )
 
@@ -166,7 +166,7 @@ def _write_workload(
         stream_manifests.append(manifest)
 
     ET.indent(root, space="  ")
-    workload_path = medium_dir / "workload.xml"
+    workload_path = tier_dir / "workload.xml"
     ET.ElementTree(root).write(workload_path, encoding="us-ascii", xml_declaration=True)
     return workload_path, stream_manifests
 
@@ -194,48 +194,48 @@ def convert_trace(
                 if event_limit is not None and event_count >= event_limit:
                     break
 
-                medium = row["medium"].lower()
+                tier = row["storage_tier"].lower()
                 timestamp = int(row["timestamp"])
-                origins.setdefault(medium, timestamp)
+                origins.setdefault(tier, timestamp)
                 stream_id = int(row["stream_id"])
-                key = (medium, stream_id)
+                key = (tier, stream_id)
 
                 if key not in writers:
-                    medium_dir = output_dir / medium
-                    medium_dir.mkdir(parents=True, exist_ok=True)
+                    tier_dir = output_dir / tier
+                    tier_dir.mkdir(parents=True, exist_ok=True)
                     writers[key] = StreamTrace.open(
-                        medium,
+                        tier,
                         stream_id,
-                        medium_dir / f"stream-{stream_id}.trace",
+                        tier_dir / f"stream-{stream_id}.trace",
                         block_size_bytes,
                     )
 
-                timestamp_ns = (timestamp - origins[medium]) * timestamp_factor
+                timestamp_ns = (timestamp - origins[tier]) * timestamp_factor
                 writers[key].emit(row, timestamp_ns)
                 event_count += 1
     finally:
         for writer in writers.values():
             writer.close()
 
-    media: dict[str, object] = {}
-    for medium in ("slc", "tlc"):
+    tiers: dict[str, object] = {}
+    for tier in ("slc", "tlc"):
         streams = sorted(
-            (writer for key, writer in writers.items() if key[0] == medium),
+            (writer for key, writer in writers.items() if key[0] == tier),
             key=lambda writer: writer.source_stream_id,
         )
         if not streams:
-            media[medium] = {"status": "no_events", "streams": []}
+            tiers[tier] = {"status": "no_events", "streams": []}
             continue
 
         workload, stream_manifests = _write_workload(
-            output_dir / medium,
+            output_dir / tier,
             streams,
-            configs[medium],
+            configs[tier],
         )
-        media[medium] = {
+        tiers[tier] = {
             "status": "converted",
-            "timestamp_origin": origins[medium],
-            "config": str(configs[medium].resolve()),
+            "timestamp_origin": origins[tier],
+            "config": str(configs[tier].resolve()),
             "workload": str(workload.resolve()),
             "streams": stream_manifests,
         }
@@ -248,7 +248,7 @@ def convert_trace(
         "block_size_bytes": block_size_bytes,
         "events": event_count,
         "event_limit": event_limit,
-        "media": media,
+        "tiers": tiers,
     }
     (output_dir / "manifest.json").write_text(
         json.dumps(manifest, indent=2) + "\n",
@@ -329,19 +329,19 @@ def run_mqsim(
     manifest: dict[str, object],
 ) -> dict[str, object]:
     results: dict[str, object] = {}
-    media = manifest["media"]
-    for medium in ("slc", "tlc"):
-        medium_manifest = media[medium]
-        if medium_manifest["status"] == "no_events":
-            results[medium] = {"status": "no_events"}
+    tiers = manifest["tiers"]
+    for tier in ("slc", "tlc"):
+        tier_manifest = tiers[tier]
+        if tier_manifest["status"] == "no_events":
+            results[tier] = {"status": "no_events"}
             continue
 
-        workload_path = Path(medium_manifest["workload"])
+        workload_path = Path(tier_manifest["workload"])
         subprocess.run(
             [
                 str(mqsim_binary.resolve()),
                 "-i",
-                str(Path(medium_manifest["config"]).resolve()),
+                str(Path(tier_manifest["config"]).resolve()),
                 "-w",
                 str(workload_path.resolve()),
             ],
@@ -349,15 +349,15 @@ def run_mqsim(
             check=True,
         )
         result_path = workload_path.with_name("workload_scenario_1.xml")
-        medium_result = _read_mqsim_result(result_path, medium_manifest["streams"])
+        tier_result = _read_mqsim_result(result_path, tier_manifest["streams"])
         _require_completed_flows(
-            medium_manifest["streams"],
-            medium_result["flows"],
+            tier_manifest["streams"],
+            tier_result["flows"],
             manifest["block_size_bytes"],
         )
-        results[medium] = {
+        results[tier] = {
             "status": "completed",
-            **medium_result,
+            **tier_result,
         }
 
     summary = {"conversion": manifest, "mqsim": results}

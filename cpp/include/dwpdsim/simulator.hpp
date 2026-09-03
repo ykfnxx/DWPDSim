@@ -54,7 +54,7 @@ class Simulator {
     void evict_from_memory(const AccessContext& context);
     void write_to_storage(NodeId node_id, const AccessContext& context);
     void evict_from_storage(
-        Medium medium,
+        StorageTier tier,
         NodeId incoming_node,
         const AccessContext& context
     );

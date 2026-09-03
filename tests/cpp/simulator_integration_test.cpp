@@ -150,8 +150,8 @@ dwpdsim::SimulationConfig config() {
     return dwpdsim::SimulationConfig{
         8,
         8,
-        dwpdsim::MediumConfig{8, 2},
-        dwpdsim::MediumConfig{16, 1},
+        dwpdsim::StorageTierConfig{8, 2},
+        dwpdsim::StorageTierConfig{16, 1},
         "ticks",
         0,
     };
@@ -167,7 +167,7 @@ void test_promotion_demotes_slc_before_write() {
             true,
             dwpdsim::EvictionAction::Persist
         ),
-        std::make_unique<dwpdsim::FixedPlacementPolicy>(dwpdsim::Medium::Slc, 1),
+        std::make_unique<dwpdsim::FixedPlacementPolicy>(dwpdsim::StorageTier::Slc, 1),
         std::make_unique<dwpdsim::LruStorageEvictionPolicy>(),
         trace_path
     );
@@ -207,7 +207,7 @@ void test_promotion_demotes_slc_before_write() {
     const dwpdsim::NodeId second = *simulator.tree().find_root_child(2);
     assert(simulator.tree().node(first).in_memory);
     assert(simulator.tree().node(first).on_storage);
-    assert(simulator.tree().node(first).storage_medium == dwpdsim::Medium::Tlc);
+    assert(simulator.tree().node(first).storage_tier == dwpdsim::StorageTier::Tlc);
     assert(simulator.tree().node(first).access_count == 3);
     assert(!simulator.tree().node(second).in_memory);
     assert(simulator.tree().node(second).on_storage);
@@ -240,7 +240,7 @@ void test_storage_hit_can_bypass_memory() {
             false,
             dwpdsim::EvictionAction::Persist
         ),
-        std::make_unique<dwpdsim::FixedPlacementPolicy>(dwpdsim::Medium::Slc, 0),
+        std::make_unique<dwpdsim::FixedPlacementPolicy>(dwpdsim::StorageTier::Slc, 0),
         std::make_unique<dwpdsim::LruStorageEvictionPolicy>(),
         trace_path
     );
@@ -275,7 +275,7 @@ void test_memory_and_storage_evict_complete_segments() {
             true,
             dwpdsim::EvictionAction::Persist
         ),
-        std::make_unique<dwpdsim::FixedPlacementPolicy>(dwpdsim::Medium::Slc, 0),
+        std::make_unique<dwpdsim::FixedPlacementPolicy>(dwpdsim::StorageTier::Slc, 0),
         std::make_unique<dwpdsim::LruStorageEvictionPolicy>(),
         trace_path
     );
@@ -332,7 +332,7 @@ void test_slc_demotion_evicts_full_tlc_without_overwriting_segment() {
             true,
             dwpdsim::EvictionAction::Persist
         ),
-        std::make_unique<dwpdsim::FixedPlacementPolicy>(dwpdsim::Medium::Slc, 1),
+        std::make_unique<dwpdsim::FixedPlacementPolicy>(dwpdsim::StorageTier::Slc, 1),
         std::make_unique<dwpdsim::LruStorageEvictionPolicy>(),
         trace_path
     );
@@ -360,7 +360,7 @@ void test_slc_demotion_evicts_full_tlc_without_overwriting_segment() {
     assert(metrics.storage_resident_blocks[0] == 1);
     assert(metrics.storage_resident_blocks[1] == 1);
     assert(!simulator.tree().contains(1));
-    assert(simulator.tree().node(2).storage_medium == dwpdsim::Medium::Tlc);
+    assert(simulator.tree().node(2).storage_tier == dwpdsim::StorageTier::Tlc);
     assert(simulator.tree().node(2).access_count == 1);
 
     std::ifstream trace(trace_path);
@@ -387,7 +387,7 @@ void test_policy_tree_view_and_deleted_node_lifecycle() {
     dwpdsim::Simulator simulator(
         config(),
         std::move(memory_policy),
-        std::make_unique<dwpdsim::FixedPlacementPolicy>(dwpdsim::Medium::Slc, 0),
+        std::make_unique<dwpdsim::FixedPlacementPolicy>(dwpdsim::StorageTier::Slc, 0),
         std::make_unique<dwpdsim::LruStorageEvictionPolicy>(),
         trace_path
     );
@@ -424,7 +424,7 @@ void test_branch_node_is_an_evictable_segment_endpoint() {
             true,
             dwpdsim::EvictionAction::Persist
         ),
-        std::make_unique<dwpdsim::FixedPlacementPolicy>(dwpdsim::Medium::Slc, 0),
+        std::make_unique<dwpdsim::FixedPlacementPolicy>(dwpdsim::StorageTier::Slc, 0),
         std::make_unique<dwpdsim::LruStorageEvictionPolicy>(),
         trace_path
     );
@@ -442,9 +442,9 @@ void test_branch_node_is_an_evictable_segment_endpoint() {
     std::filesystem::remove(trace_path);
 }
 
-void test_storage_eviction_uses_only_the_target_medium_subset() {
+void test_storage_eviction_uses_only_the_source_tier_subset() {
     const std::filesystem::path trace_path =
-        std::filesystem::temp_directory_path() / "dwpdsim-core-medium-subset.csv";
+        std::filesystem::temp_directory_path() / "dwpdsim-core-tier-subset.csv";
     dwpdsim::SimulationConfig test_config = config();
     test_config.memory_capacity_bytes = 24;
     test_config.slc.capacity_bytes = 16;
@@ -474,11 +474,11 @@ void test_storage_eviction_uses_only_the_target_medium_subset() {
     assert(simulator.metrics().storage_evicted_segments[1] == 0);
     assert(simulator.metrics().storage_evicted_blocks[1] == 0);
     assert(simulator.tree().node(3).on_storage);
-    assert(simulator.tree().node(3).storage_medium == dwpdsim::Medium::Tlc);
+    assert(simulator.tree().node(3).storage_tier == dwpdsim::StorageTier::Tlc);
     assert(simulator.tree().node(2).on_storage);
-    assert(simulator.tree().node(2).storage_medium == dwpdsim::Medium::Tlc);
+    assert(simulator.tree().node(2).storage_tier == dwpdsim::StorageTier::Tlc);
     assert(simulator.tree().node(1).on_storage);
-    assert(simulator.tree().node(1).storage_medium == dwpdsim::Medium::Tlc);
+    assert(simulator.tree().node(1).storage_tier == dwpdsim::StorageTier::Tlc);
     std::filesystem::remove(trace_path);
 }
 
@@ -492,7 +492,7 @@ void test_memory_segment_keeps_per_block_copy_actions() {
     dwpdsim::Simulator simulator(
         test_config,
         std::make_unique<SelectivePersistMemoryPolicy>(),
-        std::make_unique<dwpdsim::FixedPlacementPolicy>(dwpdsim::Medium::Slc, 0),
+        std::make_unique<dwpdsim::FixedPlacementPolicy>(dwpdsim::StorageTier::Slc, 0),
         std::make_unique<dwpdsim::LruStorageEvictionPolicy>(),
         trace_path
     );
@@ -523,7 +523,7 @@ int main() {
     test_slc_demotion_evicts_full_tlc_without_overwriting_segment();
     test_policy_tree_view_and_deleted_node_lifecycle();
     test_branch_node_is_an_evictable_segment_endpoint();
-    test_storage_eviction_uses_only_the_target_medium_subset();
+    test_storage_eviction_uses_only_the_source_tier_subset();
     test_memory_segment_keeps_per_block_copy_actions();
     return 0;
 }

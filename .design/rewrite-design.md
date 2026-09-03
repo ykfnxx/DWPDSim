@@ -1,6 +1,6 @@
 # DWPDSim 重写设计
 
-状态：v0.5 核心设计已实现。
+状态：v0.6 核心设计已实现。
 
 ## 1. 背景与目标
 
@@ -57,7 +57,7 @@ root 使用专用内部 slot，不占用任何合法 uint64 hash。
 | --- | --- | --- |
 | 节点在内存 | memory hit | 更新统计，不产生 SSD I/O |
 | 节点不在内存、在 SLC/TLC | storage hit | 产生 READ；是否进入内存由 MemoryPolicy 决定 |
-| 节点在三种介质中都不存在 | global miss | 认为计算已经完成，强制加入内存，不产生 READ |
+| 节点在三种层级中都不存在 | global miss | 认为计算已经完成，强制加入内存，不产生 READ |
 
 global miss 后的内存接纳是固定行为，不能被 policy 拒绝。DWPDSim 不模拟重新计算 KV
 block 的耗时。
@@ -73,14 +73,14 @@ storage hit 无论是否提升到内存，都必须产生 READ。选择 bypass �
 - victim 已有 SLC/TLC 副本：只删除内存副本，不产生 WRITE；
 - victim 没有盘上副本：MemoryPolicy 决定 `DROP` 或 `PERSIST`；
 - `DROP`：节点变为无驻留状态；
-- `PERSIST`：调用 WritePlacementPolicy 选择介质和 stream，随后产生 WRITE。
+- `PERSIST`：调用 WritePlacementPolicy 选择层级和 stream，随后产生 WRITE。
 
 一次选择可能释放多个内存 block，但每个 block 的 DROP、PERSIST、WRITE 和状态更新仍然
 独立执行。global miss 新创建的节点不会因为自己尚未驻留而被实际移除。
 
 ### 2.4 盘上淘汰与 SLC 到 TLC 迁移
 
-SLC 或 TLC 写满时，由 StorageEvictionPolicy 选择一个与目标介质相交的 segment，并为
+SLC 或 TLC 写满时，由 StorageEvictionPolicy 选择一个与目标层级相交的 segment，并为
 整个 segment 返回淘汰动作：
 
 1. 内置 LRU 淘汰 SLC 时返回 `DEMOTE_TO_TLC`，将 segment 的 SLC 子集逐 block 迁到 TLC；
@@ -89,7 +89,7 @@ SLC 或 TLC 写满时，由 StorageEvictionPolicy 选择一个与目标介质相
 3. 如果 TLC 已满，迁移 WRITE 前先淘汰一个 TLC segment；
 4. 内置 LRU 淘汰 TLC 时返回 `DROP`，对 segment 的 TLC 子集逐 block 产生 TRIM、释放地址
    并清除盘上位置；
-5. 源介质完成整个 segment 后，再执行触发本次淘汰的 WRITE。
+5. 源层级完成整个 segment 后，再执行触发本次淘汰的 WRITE。
 
 `DROP` 的 block 如果仍在内存，它变为 memory-only；否则变为无驻留状态。无驻留且没有
 child 的节点会从树中删除，并继续向 root prune 新产生的空祖先；有存活 child 的无驻留
@@ -186,7 +186,7 @@ leaf，也可以是分叉节点。一个 segment 从端点向 root 遍历，包�
 节点自身作为上游 segment 的端点，确保每个真实节点恰好属于一个可淘汰 segment。
 
 Memory、SLC、TLC 都只是全局树节点集合的子集。policy 选择 segment 端点，实际操作分别
-作用于 segment 与目标介质子集的交集。
+作用于 segment 与目标层级子集的交集。
 
 ### 5.2 物理表示
 
@@ -218,7 +218,7 @@ Node {
 
     storage_block_address: uint64
     storage_stream_id: uint32
-    storage_medium: SLC | TLC
+    storage_tier: SLC | TLC
     in_memory: bool
     on_storage: bool
     has_last_hit: bool
@@ -257,7 +257,7 @@ on_storage + storage fields: None | SLC location | TLC location
 ```
 
 正在 admission 的当前节点在本次访问结束前受到结构保护，避免嵌套 storage eviction 在
-它获得内存驻留前将其 prune。该保护不构成新的介质驻留状态，也不跨访问保留。
+它获得内存驻留前将其 prune。该保护不构成新的层级驻留状态，也不跨访问保留。
 
 为了使 trace 可重复，所有由一次 access 派生的 I/O 使用同一 timestamp，并按以下顺序
 分配递增的 trace sequence：
@@ -305,38 +305,38 @@ MemoryPolicy 决定 `PERSIST` 时调用一般 placement：
 
 ```text
 place(node, context, tree, storage_summary) -> Placement {
-    medium: SLC | TLC
+    tier: SLC | TLC
     stream_id: uint32
 }
 ```
 
-它负责选择介质和 stream，不负责淘汰盘上 block。内置实现至少包括固定介质/stream，
+它负责选择层级和 stream，不负责淘汰盘上 block。内置实现至少包括固定层级/stream，
 以及按可配置比例分配 SLC/TLC 的实现。
 
-SLC 迁移已经确定目标介质，使用：
+SLC 迁移已经确定目标层级，使用：
 
 ```text
-place_on_medium(TLC, node, context, tree, storage_summary) -> Placement
+place_on_tier(TLC, node, context, tree, storage_summary) -> Placement
 ```
 
 该接口只为 TLC 选择 stream。RatioPlacementPolicy 会轮转 TLC stream，但不会把迁移写入
-计入一般 placement 的介质比例；FixedPlacementPolicy 在固定目标不是 TLC 时使用 TLC
+计入一般 placement 的层级比例；FixedPlacementPolicy 在固定目标不是 TLC 时使用 TLC
 stream 0。
 
 ### 7.3 StorageEvictionPolicy
 
-当 placement 选择的介质没有空闲地址时调用：
+当 placement 选择的层级没有空闲地址时调用：
 
 ```text
-choose_victim(medium, incoming_node, context, tree) -> NodeId
-eviction_action(medium, victim_endpoint, incoming_node, context, tree)
+choose_victim(tier, incoming_node, context, tree) -> NodeId
+eviction_action(tier, victim_endpoint, incoming_node, context, tree)
     -> DROP | DEMOTE_TO_TLC
-on_storage_read(node_id, medium)
-on_storage_write(node_id, medium)
-on_storage_remove(node_id, medium)
+on_storage_read(node_id, tier)
+on_storage_write(node_id, tier)
+on_storage_remove(node_id, tier)
 ```
 
-内置实现为每个介质维护独立 LRU。返回端点对应的 segment 必须与目标介质存在非空交集；
+内置实现为每个层级维护独立 LRU。返回端点对应的 segment 必须与目标层级存在非空交集；
 它对 SLC 返回迁移、对 TLC 返回删除。
 
 三类 policy 都接收 `on_node_created`、`on_node_removed` 和 `on_access_complete` 通知。
@@ -345,10 +345,10 @@ on_storage_remove(node_id, medium)
 
 ## 8. SLC/TLC 与地址管理
 
-配置直接给出两个介质的容量和 stream 数量：
+配置直接给出两个层级的容量和 stream 数量：
 
 ```text
-MediumConfig {
+StorageTierConfig {
     capacity_bytes: uint64
     stream_count: uint32
 }
@@ -363,7 +363,7 @@ MediumConfig {
 WRITE 从空闲集合取得一个 slot。TRIM 后 slot 立即可重用。stream 只是写入 trace 的
 分类信息，不切分物理容量，也不建立 chunk。
 
-如果目标介质已满，一次 segment 淘汰可以释放多个 block slot，多余地址保留在空闲集合。
+如果目标层级已满，一次 segment 淘汰可以释放多个 block slot，多余地址保留在空闲集合。
 单个 KV block 仍不拆成多个不同地址的 I/O。
 
 ## 9. 通用 trace
@@ -376,17 +376,17 @@ WRITE 从空闲集合取得一个 slot。TRIM 后 slot 立即可重用。stream 
 | `timestamp` | uint64 | 原始请求时间 |
 | `request_sequence` | uint64 | 全局 block access 顺序 |
 | `operation` | enum | READ、WRITE 或 TRIM |
-| `medium` | enum | SLC 或 TLC |
+| `storage_tier` | enum | SLC 或 TLC |
 | `stream_id` | uint32 | WRITE 必填；READ/TRIM 记录原写入 stream |
-| `offset_bytes` | uint64 | 介质内逻辑字节偏移 |
+| `offset_bytes` | uint64 | 层级内逻辑字节偏移 |
 | `length_bytes` | uint64 | 第一版恒为 block size |
 | `node_id` | uint64 | 前缀树节点标识 |
 | `hash_id` | uint64 | 输入 hash，便于分析 |
 | `reason` | enum | STORAGE_HIT、MEMORY_EVICTION、STORAGE_EVICTION 或 SLC_DEMOTION |
 
 trace 使用缓冲写入，不在内存中累计全部事件。输出 metrics 时同时记录 block size、
-timestamp unit、介质容量和 trace schema version。加入 `SLC_DEMOTION` 后 schema version
-为 2，转换脚本据此生成 MQSim 等目标格式。
+timestamp unit、层级容量和 trace schema version。字段 `storage_tier` 对应 schema version
+3，转换脚本据此生成 MQSim 等目标格式。
 
 ## 10. Metrics
 
@@ -413,7 +413,7 @@ timestamp unit、介质容量和 trace schema version。加入 `SLC_DEMOTION` �
 
 ### 存储与 trace
 
-- SLC/TLC 各自离开源介质的淘汰 segment/block 数、其中迁到 TLC 的 segment/block 数，
+- SLC/TLC 各自离开源层级的淘汰 segment/block 数、其中迁到 TLC 的 segment/block 数，
   以及 READ、WRITE、TRIM 数和字节数；
 - 每个 stream 的 WRITE 数和字节数；
 - SLC/TLC 当前和峰值驻留 block 数；
@@ -454,8 +454,8 @@ SimulationConfig {
     block_size_bytes = 8 MiB
     timestamp_unit
     memory_capacity_bytes
-    slc: MediumConfig
-    tlc: MediumConfig
+    slc: StorageTierConfig
+    tlc: StorageTierConfig
     trace_path
     progress_interval_requests
 }
@@ -579,7 +579,7 @@ GC、transfer 或防御性 rollback 行为。
 
 - 已确认的三种访问语义和三类 policy 边界全部实现；
 - 同一输入、配置和 policy 产生确定性的 metrics 与 trace；
-- trace 中 WRITE 包含正确介质、stream 和地址；
+- trace 中 WRITE 包含正确层级、stream 和地址；
 - 盘上淘汰产生 TRIM，但不发生任何内部 GC 行为；
 - 大规模输入以 batch 流式处理，输入和 trace 都不整体驻留内存；
 - 测试集中在模块协作及端到端输出，没有为防御性校验扩张测试面。

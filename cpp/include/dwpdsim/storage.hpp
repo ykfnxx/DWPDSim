@@ -10,10 +10,10 @@
 
 namespace dwpdsim {
 
-class MediumState {
+class StorageTierState {
   public:
-    MediumState() = default;
-    MediumState(const MediumConfig& config, std::uint64_t block_size_bytes);
+    StorageTierState() = default;
+    StorageTierState(const StorageTierConfig& config, std::uint64_t block_size_bytes);
 
     bool full() const noexcept;
     std::uint64_t allocate() noexcept;
@@ -37,12 +37,12 @@ class StorageState {
   public:
     explicit StorageState(const SimulationConfig& config);
 
-    MediumState& medium(Medium medium) noexcept;
-    const MediumState& medium(Medium medium) const noexcept;
+    StorageTierState& tier(StorageTier tier) noexcept;
+    const StorageTierState& tier(StorageTier tier) const noexcept;
     StorageSummary summary() const noexcept;
 
   private:
-    std::array<MediumState, 2> media_;
+    std::array<StorageTierState, 2> tiers_;
 };
 
 }  // namespace dwpdsim

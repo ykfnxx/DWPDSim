@@ -38,10 +38,10 @@ void MetricsCollector::record_access(AccessResult result) noexcept {
 
 void MetricsCollector::record_io(
     Operation operation,
-    Medium medium,
+    StorageTier tier,
     std::uint32_t stream_id
 ) noexcept {
-    MediumIoCounters& counters = io[medium_index(medium)];
+    StorageTierIoCounters& counters = io[storage_tier_index(tier)];
     switch (operation) {
         case Operation::Read:
             ++counters.reads;
@@ -74,8 +74,8 @@ void MetricsCollector::memory_removed(bool has_storage_copy) noexcept {
     }
 }
 
-void MetricsCollector::storage_written(Medium medium, bool has_memory_copy) noexcept {
-    const std::size_t index = medium_index(medium);
+void MetricsCollector::storage_written(StorageTier tier, bool has_memory_copy) noexcept {
+    const std::size_t index = storage_tier_index(tier);
     ++storage_resident_blocks[index];
     peak_storage_resident_blocks[index] = std::max(
         peak_storage_resident_blocks[index],
@@ -86,8 +86,8 @@ void MetricsCollector::storage_written(Medium medium, bool has_memory_copy) noex
     }
 }
 
-void MetricsCollector::storage_removed(Medium medium, bool has_memory_copy) noexcept {
-    --storage_resident_blocks[medium_index(medium)];
+void MetricsCollector::storage_removed(StorageTier tier, bool has_memory_copy) noexcept {
+    --storage_resident_blocks[storage_tier_index(tier)];
     if (has_memory_copy) {
         --duplicated_blocks;
     }

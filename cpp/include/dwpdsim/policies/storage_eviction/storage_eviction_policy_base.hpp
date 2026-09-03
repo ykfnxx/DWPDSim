@@ -13,23 +13,23 @@ class StorageEvictionPolicyBase {
     virtual ~StorageEvictionPolicyBase() = default;
 
     virtual NodeId choose_victim(
-        Medium medium,
+        StorageTier tier,
         NodeId incoming_node,
         const AccessContext& context,
         const RadixTree& tree
     ) = 0;
 
     virtual StorageEvictionAction eviction_action(
-        Medium medium,
+        StorageTier tier,
         NodeId victim_endpoint,
         NodeId incoming_node,
         const AccessContext& context,
         const RadixTree& tree
     ) = 0;
 
-    virtual void on_storage_read(NodeId node_id, Medium medium) = 0;
-    virtual void on_storage_write(NodeId node_id, Medium medium) = 0;
-    virtual void on_storage_remove(NodeId node_id, Medium medium) = 0;
+    virtual void on_storage_read(NodeId node_id, StorageTier tier) = 0;
+    virtual void on_storage_write(NodeId node_id, StorageTier tier) = 0;
+    virtual void on_storage_remove(NodeId node_id, StorageTier tier) = 0;
 
     virtual void on_node_created(
         NodeId,

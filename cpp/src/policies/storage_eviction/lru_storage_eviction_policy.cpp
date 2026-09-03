@@ -7,18 +7,18 @@
 namespace dwpdsim {
 
 NodeId LruStorageEvictionPolicy::choose_victim(
-    Medium medium,
+    StorageTier tier,
     NodeId incoming_node,
     const AccessContext& context,
     const RadixTree& tree
 ) {
     static_cast<void>(incoming_node);
     static_cast<void>(context);
-    return tree.segment_leaf_for(*tails_[medium_index(medium)]);
+    return tree.segment_leaf_for(*tails_[storage_tier_index(tier)]);
 }
 
 StorageEvictionAction LruStorageEvictionPolicy::eviction_action(
-    Medium medium,
+    StorageTier tier,
     NodeId victim_endpoint,
     NodeId incoming_node,
     const AccessContext& context,
@@ -28,30 +28,30 @@ StorageEvictionAction LruStorageEvictionPolicy::eviction_action(
     static_cast<void>(incoming_node);
     static_cast<void>(context);
     static_cast<void>(tree);
-    return medium == Medium::Slc ? StorageEvictionAction::DemoteToTlc
+    return tier == StorageTier::Slc ? StorageEvictionAction::DemoteToTlc
                                  : StorageEvictionAction::Drop;
 }
 
-void LruStorageEvictionPolicy::on_storage_read(NodeId node_id, Medium medium) {
+void LruStorageEvictionPolicy::on_storage_read(NodeId node_id, StorageTier tier) {
     detach(node_id);
-    attach_front(node_id, medium);
+    attach_front(node_id, tier);
 }
 
-void LruStorageEvictionPolicy::on_storage_write(NodeId node_id, Medium medium) {
-    attach_front(node_id, medium);
+void LruStorageEvictionPolicy::on_storage_write(NodeId node_id, StorageTier tier) {
+    attach_front(node_id, tier);
 }
 
-void LruStorageEvictionPolicy::on_storage_remove(NodeId node_id, Medium medium) {
-    static_cast<void>(medium);
+void LruStorageEvictionPolicy::on_storage_remove(NodeId node_id, StorageTier tier) {
+    static_cast<void>(tier);
     detach(node_id);
 }
 
-void LruStorageEvictionPolicy::attach_front(NodeId node_id, Medium medium) noexcept {
-    const std::size_t index = medium_index(medium);
+void LruStorageEvictionPolicy::attach_front(NodeId node_id, StorageTier tier) noexcept {
+    const std::size_t index = storage_tier_index(tier);
     Link& link = links_[node_id];
     link.previous.reset();
     link.next = heads_[index];
-    link.medium = medium;
+    link.tier = tier;
     if (heads_[index].has_value()) {
         links_.find(*heads_[index])->second.previous = node_id;
     } else {
@@ -63,7 +63,7 @@ void LruStorageEvictionPolicy::attach_front(NodeId node_id, Medium medium) noexc
 void LruStorageEvictionPolicy::detach(NodeId node_id) noexcept {
     const auto entry = links_.find(node_id);
     const Link link = entry->second;
-    const std::size_t index = medium_index(link.medium);
+    const std::size_t index = storage_tier_index(link.tier);
     if (link.previous.has_value()) {
         links_.find(*link.previous)->second.next = link.next;
     } else {

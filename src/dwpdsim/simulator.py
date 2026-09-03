@@ -44,8 +44,8 @@ class DWPDSimulator:
         core_config.memory_capacity_bytes = config.memory_capacity_bytes
         core_config.timestamp_unit = config.timestamp_unit
         core_config.progress_interval_requests = config.progress_interval_requests
-        core_config.slc = self._medium_config(config.slc)
-        core_config.tlc = self._medium_config(config.tlc)
+        core_config.slc = self._storage_tier_config(config.slc)
+        core_config.tlc = self._storage_tier_config(config.tlc)
 
         self.config = config
         self.trace_path = Path(trace_path)
@@ -56,7 +56,7 @@ class DWPDSimulator:
             admit_storage_hits=memory.admit_storage_hits,
             memory_eviction_action=memory.eviction_action,
             placement_policy=placement.kind,
-            fixed_medium=placement.fixed_medium,
+            fixed_tier=placement.fixed_tier,
             fixed_stream_id=placement.fixed_stream_id,
             slc_write_ratio=placement.slc_write_ratio,
             storage_eviction_policy=storage_eviction.kind,
@@ -73,8 +73,8 @@ class DWPDSimulator:
         )
 
     @staticmethod
-    def _medium_config(config: Any):
-        result = _core.MediumConfig()
+    def _storage_tier_config(config: Any):
+        result = _core.StorageTierConfig()
         result.capacity_bytes = config.capacity_bytes
         result.stream_count = config.stream_count
         return result

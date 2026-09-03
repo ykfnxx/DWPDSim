@@ -9,15 +9,15 @@ namespace dwpdsim {
 
 class RadixTree;
 
-struct MediumSummary {
+struct StorageTierSummary {
     std::uint64_t capacity_blocks;
     std::uint64_t used_blocks;
     std::uint32_t stream_count;
 };
 
 struct StorageSummary {
-    MediumSummary slc;
-    MediumSummary tlc;
+    StorageTierSummary slc;
+    StorageTierSummary tlc;
 };
 
 class WritePlacementPolicyBase {
@@ -31,8 +31,8 @@ class WritePlacementPolicyBase {
         const StorageSummary& storage
     ) = 0;
 
-    virtual Placement place_on_medium(
-        Medium medium,
+    virtual Placement place_on_tier(
+        StorageTier tier,
         const Node& node,
         const AccessContext& context,
         const RadixTree& tree,

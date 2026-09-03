@@ -36,14 +36,14 @@ py::buffer_info require_u64_buffer(const py::buffer& buffer, const char* name) {
     return info;
 }
 
-Medium parse_medium(const std::string& value) {
+StorageTier parse_storage_tier(const std::string& value) {
     if (value == "slc") {
-        return Medium::Slc;
+        return StorageTier::Slc;
     }
     if (value == "tlc") {
-        return Medium::Tlc;
+        return StorageTier::Tlc;
     }
-    throw py::value_error("fixed_medium must be 'slc' or 'tlc'");
+    throw py::value_error("fixed_tier must be 'slc' or 'tlc'");
 }
 
 EvictionAction parse_eviction_action(const std::string& value) {
@@ -59,18 +59,18 @@ EvictionAction parse_eviction_action(const std::string& value) {
 std::unique_ptr<WritePlacementPolicyBase> make_placement_policy(
     const std::string& policy,
     const SimulationConfig& config,
-    const std::string& fixed_medium,
+    const std::string& fixed_tier,
     std::uint32_t fixed_stream_id,
     double slc_write_ratio
 ) {
     if (policy == "fixed") {
-        const Medium medium = parse_medium(fixed_medium);
+        const StorageTier tier = parse_storage_tier(fixed_tier);
         const std::uint32_t stream_count =
-            medium == Medium::Slc ? config.slc.stream_count : config.tlc.stream_count;
+            tier == StorageTier::Slc ? config.slc.stream_count : config.tlc.stream_count;
         if (fixed_stream_id >= stream_count) {
-            throw py::value_error("fixed stream_id is outside the configured medium");
+            throw py::value_error("fixed stream_id is outside the configured tier");
         }
-        return std::make_unique<FixedPlacementPolicy>(medium, fixed_stream_id);
+        return std::make_unique<FixedPlacementPolicy>(tier, fixed_stream_id);
     }
     if (policy == "ratio") {
         if (slc_write_ratio < 0.0 || slc_write_ratio > 1.0) {
@@ -96,14 +96,14 @@ double rate(std::uint64_t numerator, std::uint64_t denominator) {
     return denominator == 0 ? 0.0 : static_cast<double>(numerator) / denominator;
 }
 
-py::dict medium_metrics(
+py::dict storage_tier_metrics(
     const Simulator& simulator,
-    Medium medium,
-    const MediumConfig& config
+    StorageTier tier,
+    const StorageTierConfig& config
 ) {
     const MetricsCollector& metrics = simulator.metrics();
-    const std::size_t index = medium_index(medium);
-    const MediumIoCounters& io = metrics.io[index];
+    const std::size_t index = storage_tier_index(tier);
+    const StorageTierIoCounters& io = metrics.io[index];
     const std::uint64_t block_size = simulator.config().block_size_bytes;
 
     py::dict streams;
@@ -181,8 +181,8 @@ py::dict simulator_stats(const Simulator& simulator) {
     memory["eviction_persists"] = metrics.memory_eviction_persists;
 
     py::dict storage;
-    storage["slc"] = medium_metrics(simulator, Medium::Slc, config.slc);
-    storage["tlc"] = medium_metrics(simulator, Medium::Tlc, config.tlc);
+    storage["slc"] = storage_tier_metrics(simulator, StorageTier::Slc, config.slc);
+    storage["tlc"] = storage_tier_metrics(simulator, StorageTier::Tlc, config.tlc);
     storage["duplicated_blocks"] = metrics.duplicated_blocks;
 
     py::dict tree;
@@ -191,7 +191,7 @@ py::dict simulator_stats(const Simulator& simulator) {
     tree["nodes_removed"] = metrics.tree_nodes_removed;
 
     py::dict trace;
-    trace["schema_version"] = 2;
+    trace["schema_version"] = 3;
     trace["events"] = simulator.trace_event_count();
 
     py::dict result;
@@ -213,12 +213,12 @@ PYBIND11_MODULE(_core, module) {
     using namespace dwpdsim;
 
     module.doc() = "C++ core for DWPDSim";
-    module.attr("CORE_VERSION") = "0.5.0";
+    module.attr("CORE_VERSION") = "0.6.0";
 
-    py::class_<MediumConfig>(module, "MediumConfig")
+    py::class_<StorageTierConfig>(module, "StorageTierConfig")
         .def(py::init<>())
-        .def_readwrite("capacity_bytes", &MediumConfig::capacity_bytes)
-        .def_readwrite("stream_count", &MediumConfig::stream_count);
+        .def_readwrite("capacity_bytes", &StorageTierConfig::capacity_bytes)
+        .def_readwrite("stream_count", &StorageTierConfig::stream_count);
 
     py::class_<SimulationConfig>(module, "SimulationConfig")
         .def(py::init<>())
@@ -241,7 +241,7 @@ PYBIND11_MODULE(_core, module) {
                          bool admit_storage_hits,
                          const std::string& memory_eviction_action,
                          const std::string& placement_policy,
-                         const std::string& fixed_medium,
+                         const std::string& fixed_tier,
                          std::uint32_t fixed_stream_id,
                          double slc_write_ratio,
                          const std::string& storage_eviction_policy
@@ -259,7 +259,7 @@ PYBIND11_MODULE(_core, module) {
                 auto placement = make_placement_policy(
                     placement_policy,
                     config,
-                    fixed_medium,
+                    fixed_tier,
                     fixed_stream_id,
                     slc_write_ratio
                 );
@@ -277,7 +277,7 @@ PYBIND11_MODULE(_core, module) {
             py::arg("admit_storage_hits") = true,
             py::arg("memory_eviction_action") = "persist",
             py::arg("placement_policy") = "fixed",
-            py::arg("fixed_medium") = "tlc",
+            py::arg("fixed_tier") = "tlc",
             py::arg("fixed_stream_id") = 0,
             py::arg("slc_write_ratio") = 0.0,
             py::arg("storage_eviction_policy") = "lru"

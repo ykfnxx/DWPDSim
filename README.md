@@ -22,12 +22,12 @@ Request(timestamp=100, hash_ids=[11, 22, 33])
 - 内存不存在、SLC/TLC 存在：产生 READ，MemoryPolicy 决定是否提升到内存；
 - 三处均不存在：global miss，认为计算完成并强制加入内存；
 - 内存淘汰以 radix segment 为逻辑批次；segment 内每个 block 独立决定复用盘上副本、
-  丢弃或由 WritePlacementPolicy 选择介质和 stream 后写盘；
+  丢弃或由 WritePlacementPolicy 选择层级和 stream 后写盘；
 - SLC 满时，StorageEvictionPolicy 选择 segment，内置 LRU 将其 SLC 子集逐 block 迁到
   TLC；每个 block 依次产生 TLC WRITE 和源 SLC TRIM，之后再执行当前 SLC WRITE；
 - TLC 满时，内置 LRU 对所选 segment 的 TLC 子集逐 block 产生 TRIM，再执行目标 TLC
   WRITE；SLC 迁移时如果 TLC 已满，同样先执行这一步；
-- block 在所有介质消失且没有 child 后从树中删除，访问统计随之丢弃。
+- block 在所有层级消失且没有 child 后从树中删除，访问统计随之丢弃。
 
 SLC 到 TLC 是逻辑位置迁移，不建立双副本，也不额外产生迁移 READ。DWPDSim 不模拟 SSD
 内部 GC、擦除、真实数据传输或设备延迟。
@@ -52,18 +52,18 @@ uv run pytest
 ```python
 from dwpdsim import (
     DWPDSimulator,
-    MediumConfig,
     PlacementPolicyConfig,
     Request,
     SimulationConfig,
+    StorageTierConfig,
 )
 
 MIB = 1024 * 1024
 config = SimulationConfig(
     block_size_bytes=8 * MIB,
     memory_capacity_bytes=2 * 8 * MIB,
-    slc=MediumConfig(capacity_bytes=64 * 8 * MIB, stream_count=2),
-    tlc=MediumConfig(capacity_bytes=128 * 8 * MIB, stream_count=4),
+    slc=StorageTierConfig(capacity_bytes=64 * 8 * MIB, stream_count=2),
+    tlc=StorageTierConfig(capacity_bytes=128 * 8 * MIB, stream_count=4),
     timestamp_unit="us",
 )
 
@@ -72,7 +72,7 @@ with DWPDSimulator(
     "trace.csv",
     placement_policy=PlacementPolicyConfig(
         kind="fixed",
-        fixed_medium="tlc",
+        fixed_tier="tlc",
         fixed_stream_id=0,
     ),
 ) as simulator:
@@ -87,8 +87,8 @@ with DWPDSimulator(
 simulator.write_stats("metrics.json")
 ```
 
-`trace.csv` 包含 READ、WRITE、TRIM，以及对应的介质、stream、逻辑地址、树节点和 hash。
-WRITE 必定带有 stream 信息。
+`trace.csv` 包含 READ、WRITE、TRIM，以及对应的 `storage_tier`、stream、逻辑地址、树节点
+和 hash。WRITE 必定带有 stream 信息。
 
 ## 批量输入
 
@@ -110,10 +110,10 @@ simulator.process_batch(timestamps, offsets, hash_ids)
 
 - MemoryPolicyBase：LRU，可配置 storage hit 是否提升，以及 segment 中无盘副本 block 使用
   `drop` 或 `persist`；
-- WritePlacementPolicyBase：固定介质/stream，或按比例分配 SLC/TLC 并轮转 stream；迁移
-  使用 `place_on_medium()` 为已确定的 TLC 选择 stream，不改变原始写入比例；
+- WritePlacementPolicyBase：固定层级/stream，或按比例分配 SLC/TLC 并轮转 stream；迁移
+  使用 `place_on_tier()` 为已确定的 TLC 选择 stream，不改变原始写入比例；
 - StorageEvictionPolicyBase：选择淘汰 segment，并返回 `DROP` 或 `DEMOTE_TO_TLC`；内置
-  LRU 对 SLC 选择迁移、对 TLC 选择删除，两个介质仍各自维护 LRU 顺序。
+  LRU 对 SLC 选择迁移、对 TLC 选择删除，两个层级仍各自维护 LRU 顺序。
 
 三类 policy 都是独立的 C++ 抽象接口，决策接口接收只读 `RadixTree`，并可通过节点创建、
 删除和访问完成通知维护派生状态。新增算法时直接实现对应接口并在 pybind11 构造入口注册，
@@ -132,19 +132,19 @@ simulator.process_batch(timestamps, offsets, hash_ids)
 - memory/SLC/TLC hit、global miss 及命中率；
 - promote、bypass、segment/block 淘汰、drop、persist；
 - SLC/TLC 的 READ、WRITE、TRIM 数量和字节数；
-- SLC/TLC 离开源介质的淘汰 segment/block 数，以及其中迁到 TLC 的 segment/block 数；
+- SLC/TLC 离开源层级的淘汰 segment/block 数，以及其中迁到 TLC 的 segment/block 数；
 - 每个 stream 的写入量；
 - 当前及峰值驻留量、重复副本数、当前树节点数以及节点创建/删除数。
 
 写放大、GC、擦除和 DWPD 不属于核心模拟结果，可在下游 SSD 模拟或分析中计算。
 
 SLC 迁移在通用 trace 中表现为 TLC `WRITE` 和 SLC `TRIM`，reason 均为
-`SLC_DEMOTION`；增加该 reason 后 trace schema version 为 2。MQSim pipeline 会把它们
-分别送入 TLC 和 SLC 设备模拟；当前不会把两个设备的完成事件串成一条跨介质迁移延迟。
+`SLC_DEMOTION`；`storage_tier` 字段对应的 trace schema version 为 3。MQSim pipeline 会把它们
+分别送入 TLC 和 SLC 设备模拟；当前不会把两个设备的完成事件串成一条跨层级迁移延迟。
 
 ## MQSim pipeline
 
-仓库中的适配器可将通用 CSV trace 按介质和 stream 转换为本地 MQSim trace，分别运行
+仓库中的适配器可将通用 CSV trace 按层级和 stream 转换为本地 MQSim trace，分别运行
 SLC 与 TLC 仿真，并将关键结果汇总为 JSON。先编译同级目录中的 MQSim：
 
 ```bash
@@ -164,12 +164,12 @@ uv run python scripts/mqsim_pipeline.py trace.csv metrics.json \
 
 `--event-limit` 仅用于快速验证；去掉后会转换并执行完整 trace。输出目录包含：
 
-- `manifest.json`：输入、时间单位、介质、stream 映射和所需容量；
+- `manifest.json`：输入、时间单位、`tiers.slc`/`tiers.tlc`、stream 映射和所需容量；
 - `slc/`、`tlc/`：每个活跃 stream 的 trace、生成的 workload 和 MQSim XML 结果；
 - `summary.json`：各 flow 的请求统计和 FTL 统计。
 
-转换器将 `s`、`ms`、`us` 或 `ns` 时间戳换算为纳秒，并让每种介质从自己的首个事件
-开始计时。一个 DWPDSim stream 对应一个 MQSim flow；同一介质最多支持 8 个活跃
+转换器将 `s`、`ms`、`us` 或 `ns` 时间戳换算为纳秒，并让每种层级从自己的首个事件
+开始计时。一个 DWPDSim stream 对应一个 MQSim flow；同一层级最多支持 8 个活跃
 stream。LBA 会按 stream 紧凑重映射，WRITE 分配地址，TRIM 释放地址，后续 WRITE 可
 复用该地址。这样生成的地址与 MQSim 对 flow 的逻辑地址分区一致，不保留通用 trace
 中的原始 `offset_bytes`。

@@ -4,11 +4,11 @@ import numpy as np
 
 from dwpdsim import (
     DWPDSimulator,
-    MediumConfig,
     MemoryPolicyConfig,
     PlacementPolicyConfig,
     Request,
     SimulationConfig,
+    StorageTierConfig,
 )
 
 
@@ -17,8 +17,8 @@ def config(*, memory_blocks=1, slc_blocks=1, tlc_blocks=2, streams=2):
     return SimulationConfig(
         block_size_bytes=block_size,
         memory_capacity_bytes=memory_blocks * block_size,
-        slc=MediumConfig(slc_blocks * block_size, streams),
-        tlc=MediumConfig(tlc_blocks * block_size, streams),
+        slc=StorageTierConfig(slc_blocks * block_size, streams),
+        tlc=StorageTierConfig(tlc_blocks * block_size, streams),
         timestamp_unit="ticks",
     )
 
@@ -35,7 +35,7 @@ def test_full_cache_flow_generates_consistent_metrics_and_trace(tmp_path):
         trace_path,
         placement_policy=PlacementPolicyConfig(
             kind="fixed",
-            fixed_medium="slc",
+            fixed_tier="slc",
             fixed_stream_id=1,
         ),
     )
@@ -77,7 +77,7 @@ def test_full_cache_flow_generates_consistent_metrics_and_trace(tmp_path):
     assert stats["storage"]["slc"]["stream_writes"]["1"]["blocks"] == 2
     assert stats["storage"]["tlc"]["writes"]["blocks"] == 1
     assert stats["storage"]["tlc"]["stream_writes"]["0"]["blocks"] == 1
-    assert stats["trace"]["schema_version"] == 2
+    assert stats["trace"]["schema_version"] == 3
 
     rows = read_trace(trace_path)
     assert [row["operation"] for row in rows] == [
@@ -87,7 +87,7 @@ def test_full_cache_flow_generates_consistent_metrics_and_trace(tmp_path):
         "TRIM",
         "WRITE",
     ]
-    assert [row["medium"] for row in rows] == ["SLC", "SLC", "TLC", "SLC", "SLC"]
+    assert [row["storage_tier"] for row in rows] == ["SLC", "SLC", "TLC", "SLC", "SLC"]
     assert [row["stream_id"] for row in rows] == ["1", "1", "0", "1", "1"]
     assert [row["reason"] for row in rows] == [
         "MEMORY_EVICTION",
@@ -140,7 +140,7 @@ def test_storage_hit_can_bypass_memory(tmp_path):
             admit_storage_hits=False,
             eviction_action="persist",
         ),
-        placement_policy=PlacementPolicyConfig(fixed_medium="slc"),
+        placement_policy=PlacementPolicyConfig(fixed_tier="slc"),
     )
 
     simulator.process(0, [10])
@@ -159,7 +159,7 @@ def test_evicting_a_memory_copy_does_not_rewrite_storage(tmp_path):
     simulator = DWPDSimulator(
         config(slc_blocks=2),
         tmp_path / "existing-copy.csv",
-        placement_policy=PlacementPolicyConfig(fixed_medium="slc"),
+        placement_policy=PlacementPolicyConfig(fixed_tier="slc"),
     )
 
     for timestamp, hash_id in enumerate([1, 2, 1, 3]):
@@ -200,7 +200,7 @@ def test_memory_and_storage_eviction_use_segment_batches(tmp_path):
     simulator = DWPDSimulator(
         config(memory_blocks=3, slc_blocks=3, tlc_blocks=3),
         tmp_path / "segments.csv",
-        placement_policy=PlacementPolicyConfig(fixed_medium="slc"),
+        placement_policy=PlacementPolicyConfig(fixed_tier="slc"),
     )
 
     simulator.process(0, [1, 2, 3])
@@ -233,7 +233,7 @@ def test_slc_demotion_evicts_full_tlc_before_destination_write(tmp_path):
         trace_path,
         placement_policy=PlacementPolicyConfig(
             kind="fixed",
-            fixed_medium="slc",
+            fixed_tier="slc",
             fixed_stream_id=1,
         ),
     )
@@ -251,14 +251,16 @@ def test_slc_demotion_evicts_full_tlc_before_destination_write(tmp_path):
     assert stats["storage"]["tlc"]["demoted_blocks"] == 0
     assert stats["storage"]["tlc"]["reads"]["blocks"] == 0
     rows = read_trace(trace_path)
-    assert [(row["operation"], row["medium"], row["reason"]) for row in rows[4:7]] == [
+    assert [
+        (row["operation"], row["storage_tier"], row["reason"]) for row in rows[4:7]
+    ] == [
         ("TRIM", "TLC", "STORAGE_EVICTION"),
         ("WRITE", "TLC", "SLC_DEMOTION"),
         ("TRIM", "SLC", "SLC_DEMOTION"),
     ]
 
 
-def test_ratio_placement_distributes_media_and_streams(tmp_path):
+def test_ratio_placement_distributes_storage_tiers_and_streams(tmp_path):
     simulator = DWPDSimulator(
         config(slc_blocks=4, tlc_blocks=4),
         tmp_path / "ratio.csv",
@@ -270,7 +272,7 @@ def test_ratio_placement_distributes_media_and_streams(tmp_path):
     simulator.finish()
 
     writes = [row for row in read_trace(tmp_path / "ratio.csv") if row["operation"] == "WRITE"]
-    assert [(row["medium"], row["stream_id"]) for row in writes] == [
+    assert [(row["storage_tier"], row["stream_id"]) for row in writes] == [
         ("SLC", "0"),
         ("TLC", "0"),
         ("SLC", "1"),

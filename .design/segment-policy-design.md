@@ -1,22 +1,22 @@
 # DWPDSim RadixTree Policy 与 Segment 淘汰设计
 
-状态：v0.5 已实现。
+状态：v0.6 已实现。
 
-本文描述 DWPDSim v0.5 的 RadixTree、policy 和 segment 淘汰语义。它与
-[`rewrite-design.md`](rewrite-design.md) 一起构成当前实现规范；访问、介质、trace 和
+本文描述 DWPDSim v0.6 的 RadixTree、policy 和 segment 淘汰语义。它与
+[`rewrite-design.md`](rewrite-design.md) 一起构成当前实现规范；访问、层级、trace 和
 metrics 的其余语义以该文档为准。
 
 ## 1. 设计目标
 
 当前设计满足两个目标：
 
-1. policy 可读取 RadixTree 中的拓扑、访问统计和介质驻留状态；
+1. policy 可读取 RadixTree 中的拓扑、访问统计和层级驻留状态；
 2. 淘汰策略以 segment 为逻辑选择单位，而实际状态变更和 I/O 仍以 block 为单位。
 
 实现遵守以下边界：
 
 - Simulator 是唯一的流程协调者和状态修改者；
-- policy 读取状态并返回决策，不直接修改 RadixTree、介质、metrics 或 trace；
+- policy 读取状态并返回决策，不直接修改 RadixTree、层级、metrics 或 trace；
 - 核心热路径全部留在 C++，不增加逐 block Python callback；
 - 不复制整棵树或为 policy 创建状态快照；
 - NodeId 对外稳定，内部存储使用独立的稠密槽位。
@@ -33,16 +33,16 @@ SLC ⊆ V(T)
 TLC ⊆ V(T)
 ```
 
-其中 `T` 是全局 RadixTree。介质不会各自维护一棵独立的树，也不会分别定义自己的
+其中 `T` 是全局 RadixTree。层级不会各自维护一棵独立的树，也不会分别定义自己的
 segment 边界。
 
-节点可以同时存在于 Memory 和一个 SSD 介质，但不能同时存在于 SLC 和 TLC。节点的
-介质成员关系继续由以下状态表达：
+节点可以同时存在于 Memory 和一个 SSD 层级，但不能同时存在于 SLC 和 TLC。节点的
+层级成员关系继续由以下状态表达：
 
 ```text
 in_memory: bool
 on_storage: bool
-storage_medium: SLC | TLC
+storage_tier: SLC | TLC
 ```
 
 ### 2.2 NodeId 直接使用输入 hash_id
@@ -84,7 +84,7 @@ access_count
 节点从 RadixTree 中删除时，这些统计以及 policy 为该节点维护的派生状态一起丢弃。相同
 hash 后续重新进入系统时按冷节点处理，不保留上一生命周期的统计。
 
-如果一个节点已不在任何介质，但仍有存活 child，它暂时保留为拓扑节点，不能提前删除。
+如果一个节点已不在任何层级，但仍有存活 child，它暂时保留为拓扑节点，不能提前删除。
 它的统计也保留到该结构节点实际被删除时为止。
 
 ## 3. Segment 定义
@@ -118,9 +118,9 @@ segment = [endpoint, ..., y, x]
 使 `child_count` 从 2 变为 1 时，该节点不再是端点，原上下游 segment 在后续解析中自然
 合并。
 
-### 3.2 Segment 与介质子集
+### 3.2 Segment 与层级子集
 
-segment 是全局逻辑对象，介质操作作用于 segment 与目标介质的交集：
+segment 是全局逻辑对象，层级操作作用于 segment 与目标层级的交集：
 
 ```text
 Memory eviction: Segment(endpoint) ∩ M
@@ -128,14 +128,14 @@ SLC eviction:    Segment(endpoint) ∩ SLC
 TLC eviction:    Segment(endpoint) ∩ TLC
 ```
 
-因此 policy 返回的端点本身不要求位于目标介质，但必须满足：
+因此 policy 返回的端点本身不要求位于目标层级，但必须满足：
 
 ```text
-Segment(endpoint) ∩ target_medium != ∅
+Segment(endpoint) ∩ target_tier != ∅
 ```
 
 这样端点可以稳定表示一个全局 segment，而不会因为同一 segment 的 block 分布在不同
-介质上就生成多套 segment 身份。
+层级上就生成多套 segment 身份。
 
 ## 4. Policy 只读访问 RadixTree
 
@@ -154,7 +154,7 @@ StorageEvictionPolicy 保留现有返回语义，只增加只读 tree：
 
 ```cpp
 virtual NodeId choose_victim(
-    Medium medium,
+    StorageTier tier,
     NodeId incoming_node,
     const AccessContext& context,
     const RadixTree& tree
@@ -193,7 +193,7 @@ policy 可以据此读取：
 - 全局 parent/child/branch/leaf 关系；
 - segment 边界；
 - 节点是否在 Memory、SLC 或 TLC；
-- segment 与目标介质的交集。
+- segment 与目标层级的交集。
 
 policy 不得保存跨调用的 `Node&` 或 `Node*`。它只能保存 NodeId 或自身派生状态，并在每次
 使用时重新通过 RadixTree 查询节点。
@@ -226,7 +226,7 @@ MemoryPolicy 和 StorageEvictionPolicy 可以使用这些事件维护各自的 s
 1. get_or_create，并完成拓扑通知
 2. 判断 MemoryHit / StorageHit / GlobalMiss
 3. policy 决策读取“本次访问前”的历史统计
-4. Simulator 执行介质状态变化和 I/O
+4. Simulator 执行层级状态变化和 I/O
 5. RadixTree 更新本次访问统计
 6. policy 接收本次访问完成通知
 7. MetricsCollector 记录访问结果
@@ -289,11 +289,11 @@ segment 或再次调用 `choose_victim()`。
 
 ## 6. Storage Segment 淘汰与 SLC 迁移
 
-WritePlacementPolicy 选择目标 medium 后，如果该 medium 没有空闲 block：
+WritePlacementPolicy 选择目标 tier 后，如果该 tier 没有空闲 block：
 
 ```text
-endpoint = storage_policy.choose_victim(medium, incoming_node, context, tree)
-action = storage_policy.eviction_action(medium, endpoint, incoming_node, context, tree)
+endpoint = storage_policy.choose_victim(tier, incoming_node, context, tree)
+action = storage_policy.eviction_action(tier, endpoint, incoming_node, context, tree)
 segment = tree.resolve_segment(endpoint)
 ```
 
@@ -301,7 +301,7 @@ Simulator 按 `endpoint -> segment_top` 遍历：
 
 ```text
 for node in segment:
-    if node not in source medium:
+    if node not in source tier:
         continue
 
     if action == DEMOTE_TO_TLC:
@@ -320,8 +320,8 @@ StorageEvictionPolicy 在选出端点后，为整个 segment 返回一次动作�
 TLC 的成员不重复写入。TLC 动作也仅操作 TLC 子集。
 
 SLC 迁移对每个 block 严格输出 `TLC WRITE -> SLC TRIM`，随后才更新该节点的唯一 storage
-location。迁移目标 stream 由 WritePlacementPolicy 的 `place_on_medium(TLC, ...)` 选择；
-这个强制介质写入不计入 ratio policy 的原始 SLC/TLC 写入配比。迁移期间节点始终至少有一份
+location。迁移目标 stream 由 WritePlacementPolicy 的 `place_on_tier(TLC, ...)` 选择；
+这个强制层级写入不计入 ratio policy 的原始 SLC/TLC 写入配比。迁移期间节点始终至少有一份
 盘上逻辑副本，因此不会删除 RadixTree 节点或访问统计。
 
 TLC 满时先对一个 TLC segment 执行 DROP，再输出迁移的 TLC WRITE。一次 SLC segment 的
@@ -343,15 +343,15 @@ Simulator 使用可复用 scratch buffer 保存 NodeId；memory 使用一份，S
 
 ```text
 memory_segment = [endpoint, ..., segment_top]
-storage_segment[medium] = [endpoint, ..., segment_top]
+storage_segment[tier] = [endpoint, ..., segment_top]
 ```
 
 scratch buffer 保存全局 NodeId，不保存内部 NodeSlot，也不保存 `Node&`。逐 block 执行
-期间可能因为 SLC 迁移 WRITE 触发嵌套的 TLC segment eviction；按介质分离 buffer 保持
+期间可能因为 SLC 迁移 WRITE 触发嵌套的 TLC segment eviction；按层级分离 buffer 保持
 外层 SLC 快照不变。全局 NodeId 不会被分配给其他 block，因此不会因为内部 slot 回收而
 错误引用新节点。
 
-整个 segment 的介质操作结束后再执行统一的拓扑 prune。DWPDSim 不为 segment 建立事务、
+整个 segment 的层级操作结束后再执行统一的拓扑 prune。DWPDSim 不为 segment 建立事务、
 回滚或失败后继续运行机制；发生无法继续的输出或状态错误时直接终止模拟。
 
 正在处理的 access node 在 admission 完成前不参与 prune。memory eviction 中嵌套触发的
@@ -362,7 +362,7 @@ storage segment 会先完成 TRIM 和地址释放，但把结构 prune 延迟到
 
 ### 8.1 删除条件
 
-节点可以从 RadixTree 删除的必要条件是它不在任何介质：
+节点可以从 RadixTree 删除的必要条件是它不在任何层级：
 
 ```text
 !in_memory && !on_storage
@@ -384,7 +384,7 @@ prunable(node) =
     && node.child_count == 0
 ```
 
-如果节点已不在所有介质但仍有 child，它保留为拓扑节点。后继删除后，Simulator 从 leaf
+如果节点已不在所有层级但仍有 child，它保留为拓扑节点。后继删除后，Simulator 从 leaf
 向 root 递归 prune：
 
 ```text
@@ -422,7 +422,7 @@ root_slot: dedicated NodeSlot
 NodeSlot 可以在节点删除后回收，但 NodeId 不会被用于另一个 block。policy、trace 和 segment
 scratch buffer 不暴露 NodeSlot。
 
-内置 LRU 使用显式的 NodeId 到 link 映射，不保存 NodeSlot。节点移出介质时清理 LRU link，
+内置 LRU 使用显式的 NodeId 到 link 映射，不保存 NodeSlot。节点移出层级时清理 LRU link，
 节点删除后再通过 topology 通知清理其他 policy 派生状态，随后回收 slot。
 
 ### 8.3 相同 hash 再次出现
@@ -462,12 +462,12 @@ tree.nodes_removed
 
 现有 READ、WRITE、TRIM、DROP、PERSIST、bytes 和 stream 指标继续按 block 计数。一个
 segment 释放多个 block 时只增加一次对应的 `evicted_segments`。`evicted_*` 统计离开源
-介质的全部 segment/block，包含 DROP 和迁移；`demoted_*` 是其中迁到 TLC 的子集，内置
+层级的全部 segment/block，包含 DROP 和迁移；`demoted_*` 是其中迁到 TLC 的子集，内置
 策略下 TLC 的该组计数始终为零。
 
 I/O trace 继续逐 block 输出，不增加虚构的 segment I/O 或 `segment_sequence`；segment
 数量只在 metrics 中记录。SLC 迁移产生一条 TLC WRITE 和一条 SLC TRIM，两条 reason 均为
-`SLC_DEMOTION`；该枚举扩展对应 trace schema version 2。
+`SLC_DEMOTION`；`storage_tier` 字段对应 trace schema version 3。
 
 NodeId 直接等于 hash_id，trace 中 `node_id` 和 `hash_id` 数值相同，并保留两个字段以维持
 现有 schema。
@@ -476,16 +476,16 @@ NodeId 直接等于 hash_id，trace 中 `node_id` 和 `hash_id` 数值相同，�
 
 实现必须保持：
 
-1. 全系统只有一棵 RadixTree；介质只是节点子集；
+1. 全系统只有一棵 RadixTree；层级只是节点子集；
 2. NodeId 等于输入的全局唯一 hash，不能代表另一个 block；
 3. policy 只能通过 const 接口读取 tree；
 4. policy 返回 global segment 端点，Simulator 展开 segment；
-5. segment 边界只由全局拓扑决定，不由介质驻留状态决定；
+5. segment 边界只由全局拓扑决定，不由层级驻留状态决定；
 6. segment 在状态修改前完成快照；
 7. segment 是逻辑批量单位，实际状态变化和 I/O 是 block 粒度；
 8. SSD 副本状态不会拆分 memory segment；
-9. storage eviction 只操作 segment 与源 medium 的交集；SLC 迁移不触碰原有 TLC 子集；
-10. 节点不在所有介质且没有 child 时才可删除；
+9. storage eviction 只操作 segment 与源 tier 的交集；SLC 迁移不触碰原有 TLC 子集；
+10. 节点不在所有层级且没有 child 时才可删除；
 11. 节点删除时同时丢弃访问统计和 policy 派生状态；
 12. NodeSlot 只能在 policy 清理旧状态后回收；
 13. SLC 和 TLC 不保存同一节点的双副本；
@@ -528,7 +528,7 @@ Python 输入仍然是 timestamp 加有序 hash 序列，不增加逐节点 Pyth
 8. 一个 segment 释放多个 block 时容量和 block/segment metrics 正确；
 9. 分叉节点不属于 child 的下游 segment，并作为自身上游 segment 的端点；
 10. 删除一条分支后 branch 变成单 child，后续 segment 正确向上合并；
-11. 所有介质都不存在但仍有 child 的节点保留为拓扑节点；
+11. 所有层级都不存在但仍有 child 的节点保留为拓扑节点；
 12. 最后一个 child 删除后向上递归 prune，并同时丢弃统计；
 13. batch 和逐请求接口产生相同的 segment、metrics 和 trace；
 14. storage hit 的 READ、SLC 迁移的 `TLC WRITE -> SLC TRIM`、TLC 满时的

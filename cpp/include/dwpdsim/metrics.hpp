@@ -10,7 +10,7 @@
 
 namespace dwpdsim {
 
-struct MediumIoCounters {
+struct StorageTierIoCounters {
     std::uint64_t reads = 0;
     std::uint64_t writes = 0;
     std::uint64_t trims = 0;
@@ -23,11 +23,11 @@ class MetricsCollector {
 
     void record_request(Timestamp timestamp) noexcept;
     void record_access(AccessResult result) noexcept;
-    void record_io(Operation operation, Medium medium, std::uint32_t stream_id) noexcept;
+    void record_io(Operation operation, StorageTier tier, std::uint32_t stream_id) noexcept;
     void memory_inserted(bool has_storage_copy) noexcept;
     void memory_removed(bool has_storage_copy) noexcept;
-    void storage_written(Medium medium, bool has_memory_copy) noexcept;
-    void storage_removed(Medium medium, bool has_memory_copy) noexcept;
+    void storage_written(StorageTier tier, bool has_memory_copy) noexcept;
+    void storage_removed(StorageTier tier, bool has_memory_copy) noexcept;
 
     std::uint64_t request_count = 0;
     std::uint64_t block_access_count = 0;
@@ -54,7 +54,7 @@ class MetricsCollector {
     std::array<std::uint64_t, 2> storage_evicted_blocks{};
     std::array<std::uint64_t, 2> storage_demoted_segments{};
     std::array<std::uint64_t, 2> storage_demoted_blocks{};
-    std::array<MediumIoCounters, 2> io;
+    std::array<StorageTierIoCounters, 2> io;
 
     std::uint64_t tree_nodes_created = 0;
     std::uint64_t tree_nodes_removed = 0;

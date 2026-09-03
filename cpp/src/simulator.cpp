@@ -107,14 +107,14 @@ SimulationConfig Simulator::validate_config(SimulationConfig config) {
     ) {
         throw std::invalid_argument("memory capacity must contain whole blocks");
     }
-    for (const MediumConfig* medium : {&config.slc, &config.tlc}) {
+    for (const StorageTierConfig* tier : {&config.slc, &config.tlc}) {
         if (
-            medium->capacity_bytes == 0 ||
-            medium->capacity_bytes % config.block_size_bytes != 0
+            tier->capacity_bytes == 0 ||
+            tier->capacity_bytes % config.block_size_bytes != 0
         ) {
             throw std::invalid_argument("storage capacity must contain whole blocks");
         }
-        if (medium->stream_count == 0) {
+        if (tier->stream_count == 0) {
             throw std::invalid_argument("stream_count must be positive");
         }
     }
@@ -131,7 +131,7 @@ void Simulator::process_access(const AccessContext& context) {
         memory_policy_->on_memory_access(context.node_id);
     } else if (node.on_storage) {
         const StorageLocation location = node.storage_location();
-        result = location.medium == Medium::Slc ? AccessResult::SlcHit : AccessResult::TlcHit;
+        result = location.tier == StorageTier::Slc ? AccessResult::SlcHit : AccessResult::TlcHit;
         trace_writer_.emit(
             context,
             context.node_id,
@@ -140,8 +140,8 @@ void Simulator::process_access(const AccessContext& context) {
             location,
             TraceReason::StorageHit
         );
-        metrics_.record_io(Operation::Read, location.medium, location.stream_id);
-        storage_eviction_policy_->on_storage_read(context.node_id, location.medium);
+        metrics_.record_io(Operation::Read, location.tier, location.stream_id);
+        storage_eviction_policy_->on_storage_read(context.node_id, location.tier);
 
         if (memory_policy_->admit_storage_hit(context, node, tree_)) {
             ++metrics_.storage_promotions;
@@ -225,17 +225,17 @@ void Simulator::write_to_storage(NodeId node_id, const AccessContext& context) {
         tree_,
         storage_.summary()
     );
-    MediumState& medium = storage_.medium(placement.medium);
+    StorageTierState& tier = storage_.tier(placement.tier);
 
-    if (medium.full()) {
-        evict_from_storage(placement.medium, node_id, context);
+    if (tier.full()) {
+        evict_from_storage(placement.tier, node_id, context);
     }
 
-    const std::uint64_t address = medium.allocate();
-    node.set_storage_location(StorageLocation{placement.medium, address, placement.stream_id});
-    storage_eviction_policy_->on_storage_write(node_id, placement.medium);
-    metrics_.storage_written(placement.medium, node.in_memory);
-    metrics_.record_io(Operation::Write, placement.medium, placement.stream_id);
+    const std::uint64_t address = tier.allocate();
+    node.set_storage_location(StorageLocation{placement.tier, address, placement.stream_id});
+    storage_eviction_policy_->on_storage_write(node_id, placement.tier);
+    metrics_.storage_written(placement.tier, node.in_memory);
+    metrics_.record_io(Operation::Write, placement.tier, placement.stream_id);
     trace_writer_.emit(
         context,
         node_id,
@@ -247,26 +247,26 @@ void Simulator::write_to_storage(NodeId node_id, const AccessContext& context) {
 }
 
 void Simulator::evict_from_storage(
-    Medium medium,
+    StorageTier tier,
     NodeId incoming_node,
     const AccessContext& context
 ) {
     const NodeId endpoint = storage_eviction_policy_->choose_victim(
-        medium,
+        tier,
         incoming_node,
         context,
         tree_
     );
     const StorageEvictionAction action = storage_eviction_policy_->eviction_action(
-        medium,
+        tier,
         endpoint,
         incoming_node,
         context,
         tree_
     );
-    std::vector<NodeId>& segment = storage_segment_scratch_[medium_index(medium)];
+    std::vector<NodeId>& segment = storage_segment_scratch_[storage_tier_index(tier)];
     tree_.resolve_segment(endpoint, segment);
-    const std::size_t index = medium_index(medium);
+    const std::size_t index = storage_tier_index(tier);
     ++metrics_.storage_evicted_segments[index];
     if (action == StorageEvictionAction::DemoteToTlc) {
         ++metrics_.storage_demoted_segments[index];
@@ -274,7 +274,7 @@ void Simulator::evict_from_storage(
 
     for (NodeId victim_id : segment) {
         Node& victim = tree_.node(victim_id);
-        if (!victim.on_storage || victim.storage_medium != medium) {
+        if (!victim.on_storage || victim.storage_tier != tier) {
             continue;
         }
         ++metrics_.storage_evicted_blocks[index];
@@ -300,21 +300,21 @@ void Simulator::evict_from_storage(
 void Simulator::demote_to_tlc(NodeId node_id, const AccessContext& context) {
     Node& node = tree_.node(node_id);
     const StorageLocation source = node.storage_location();
-    const Placement placement = placement_policy_->place_on_medium(
-        Medium::Tlc,
+    const Placement placement = placement_policy_->place_on_tier(
+        StorageTier::Tlc,
         node,
         context,
         tree_,
         storage_.summary()
     );
-    MediumState& target = storage_.medium(placement.medium);
+    StorageTierState& target = storage_.tier(placement.tier);
 
     if (target.full()) {
-        evict_from_storage(placement.medium, node_id, context);
+        evict_from_storage(placement.tier, node_id, context);
     }
 
     const StorageLocation destination{
-        placement.medium,
+        placement.tier,
         target.allocate(),
         placement.stream_id,
     };
@@ -326,7 +326,7 @@ void Simulator::demote_to_tlc(NodeId node_id, const AccessContext& context) {
         destination,
         TraceReason::SlcDemotion
     );
-    metrics_.record_io(Operation::Write, destination.medium, destination.stream_id);
+    metrics_.record_io(Operation::Write, destination.tier, destination.stream_id);
     trace_writer_.emit(
         context,
         node_id,
@@ -335,14 +335,14 @@ void Simulator::demote_to_tlc(NodeId node_id, const AccessContext& context) {
         source,
         TraceReason::SlcDemotion
     );
-    metrics_.record_io(Operation::Trim, source.medium, source.stream_id);
+    metrics_.record_io(Operation::Trim, source.tier, source.stream_id);
 
-    storage_eviction_policy_->on_storage_remove(node_id, source.medium);
-    storage_.medium(source.medium).release(source.block_address);
-    metrics_.storage_removed(source.medium, node.in_memory);
+    storage_eviction_policy_->on_storage_remove(node_id, source.tier);
+    storage_.tier(source.tier).release(source.block_address);
+    metrics_.storage_removed(source.tier, node.in_memory);
     node.set_storage_location(destination);
-    storage_eviction_policy_->on_storage_write(node_id, destination.medium);
-    metrics_.storage_written(destination.medium, node.in_memory);
+    storage_eviction_policy_->on_storage_write(node_id, destination.tier);
+    metrics_.storage_written(destination.tier, node.in_memory);
 }
 
 void Simulator::trim_from_storage(NodeId node_id, const AccessContext& context) {
@@ -356,10 +356,10 @@ void Simulator::trim_from_storage(NodeId node_id, const AccessContext& context) 
         location,
         TraceReason::StorageEviction
     );
-    metrics_.record_io(Operation::Trim, location.medium, location.stream_id);
-    storage_eviction_policy_->on_storage_remove(node_id, location.medium);
-    storage_.medium(location.medium).release(location.block_address);
-    metrics_.storage_removed(location.medium, node.in_memory);
+    metrics_.record_io(Operation::Trim, location.tier, location.stream_id);
+    storage_eviction_policy_->on_storage_remove(node_id, location.tier);
+    storage_.tier(location.tier).release(location.block_address);
+    metrics_.storage_removed(location.tier, node.in_memory);
     node.clear_storage_location();
 }
 
