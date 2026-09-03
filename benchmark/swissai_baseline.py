@@ -12,8 +12,9 @@ import numpy as np
 
 from dwpdsim import (
     DWPDSimulator,
-    PlacementPolicyConfig,
+    MemoryConfig,
     SimulationConfig,
+    StoragePolicyConfig,
     StorageTierConfig,
 )
 
@@ -29,25 +30,24 @@ DEFAULT_NAIVE_UTC_OFFSET_HOURS = 8
 def build_simulator(trace_path: Path) -> DWPDSimulator:
     config = SimulationConfig(
         block_size_bytes=BLOCK_SIZE_BYTES,
-        memory_capacity_bytes=MEMORY_BLOCKS * BLOCK_SIZE_BYTES,
+        memory=MemoryConfig(MEMORY_BLOCKS * BLOCK_SIZE_BYTES),
         slc=StorageTierConfig(SLC_BLOCKS * BLOCK_SIZE_BYTES, stream_count=1),
         tlc=StorageTierConfig(TLC_BLOCKS * BLOCK_SIZE_BYTES, stream_count=1),
-        timestamp_unit="us",
-    )
-    return DWPDSimulator(
-        config,
-        trace_path,
-        placement_policy=PlacementPolicyConfig(
-            kind="fixed",
+        storage_policy=StoragePolicyConfig(
+            kind="baseline_fixed_lru",
             fixed_tier="tlc",
             fixed_stream_id=0,
         ),
     )
+    return DWPDSimulator(config, trace_path)
 
 
-def elapsed_microseconds(timestamp: datetime, origin: datetime) -> int:
+def elapsed_nanoseconds(timestamp: datetime, origin: datetime) -> int:
     delta = timestamp - origin
-    return (delta.days * 86_400 + delta.seconds) * 1_000_000 + delta.microseconds
+    return (
+        (delta.days * 86_400 + delta.seconds) * 1_000_000_000
+        + delta.microseconds * 1_000
+    )
 
 
 def parse_timestamp(value: str, naive_timezone: tzinfo) -> datetime:
@@ -72,6 +72,8 @@ def run(
     canonical_reuses = 0
     first_timestamp: datetime | None = None
     batch_timestamps: list[int] = []
+    batch_request_ids: list[int] = []
+    batch_affinity_ids: list[int] = []
     batch_offsets = [0]
     batch_hashes: list[int] = []
     next_progress = progress_every
@@ -83,10 +85,14 @@ def run(
             return
         simulator.process_batch(
             np.asarray(batch_timestamps, dtype=np.uint64),
+            np.asarray(batch_request_ids, dtype=np.uint64),
+            np.asarray(batch_affinity_ids, dtype=np.uint64),
             np.asarray(batch_offsets, dtype=np.uint64),
             np.asarray(batch_hashes, dtype=np.uint64),
         )
         batch_timestamps.clear()
+        batch_request_ids.clear()
+        batch_affinity_ids.clear()
         batch_offsets[:] = [0]
         batch_hashes.clear()
 
@@ -98,7 +104,9 @@ def run(
                 first_timestamp = timestamp
 
             hash_ids = [int(value) for value in record["bucket_ids"]]
-            batch_timestamps.append(elapsed_microseconds(timestamp, first_timestamp))
+            batch_timestamps.append(elapsed_nanoseconds(timestamp, first_timestamp))
+            batch_request_ids.append(request_count)
+            batch_affinity_ids.append(request_count)
             batch_hashes.extend(hash_ids)
             batch_offsets.append(len(batch_hashes))
 

@@ -14,11 +14,11 @@ class RadixTree {
   public:
     RadixTree();
 
-    std::pair<NodeId, bool> get_or_create_root(HashId hash_id, Timestamp timestamp);
+    std::pair<NodeId, bool> get_or_create_root(HashId hash_id, TimestampNs timestamp_ns);
     std::pair<NodeId, bool> get_or_create(
         NodeId parent_id,
         HashId hash_id,
-        Timestamp timestamp
+        TimestampNs timestamp_ns
     );
 
     std::optional<NodeId> find(HashId hash_id) const noexcept;
@@ -35,8 +35,10 @@ class RadixTree {
     NodeId segment_top(NodeId endpoint) const noexcept;
     void resolve_segment(NodeId endpoint, std::vector<NodeId>& segment) const;
     NodeId segment_leaf_for(NodeId node_id) const noexcept;
+    void children(NodeId node_id, std::vector<NodeId>& output) const;
+    bool has_storage_descendant(NodeId node_id) const;
 
-    void record_access(NodeId node_id, Timestamp timestamp, bool hit) noexcept;
+    void record_access(NodeId node_id, TimestampNs timestamp_ns, bool hit) noexcept;
 
     std::optional<NodeId> detach_leaf(NodeId node_id);
     void release_detached(NodeId node_id) noexcept;
@@ -56,7 +58,7 @@ class RadixTree {
     std::pair<NodeId, bool> get_or_create_at(
         NodeSlot parent_slot,
         HashId hash_id,
-        Timestamp timestamp
+        TimestampNs timestamp_ns
     );
     NodeSlot slot(NodeId node_id) const noexcept;
     NodeId id(NodeSlot slot) const noexcept;

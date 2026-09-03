@@ -5,22 +5,33 @@
 #include <vector>
 
 #include "dwpdsim/config.hpp"
-#include "dwpdsim/policies/write_placement/write_placement_policy_base.hpp"
 #include "dwpdsim/types.hpp"
 
 namespace dwpdsim {
+
+struct StorageTierSummary {
+    std::uint64_t capacity_blocks = 0;
+    std::uint64_t used_blocks = 0;
+    std::uint32_t stream_count = 0;
+};
+
+struct StorageSummary {
+    StorageTierSummary slc;
+    StorageTierSummary tlc;
+};
 
 class StorageTierState {
   public:
     StorageTierState() = default;
     StorageTierState(const StorageTierConfig& config, std::uint64_t block_size_bytes);
 
-    bool full() const noexcept;
+    bool has_free_blocks(std::uint64_t blocks) const noexcept;
     std::uint64_t allocate() noexcept;
     void release(std::uint64_t block_address) noexcept;
 
     std::uint64_t capacity_blocks() const noexcept;
     std::uint64_t used_blocks() const noexcept;
+    std::uint64_t free_blocks() const noexcept;
     std::uint64_t peak_used_blocks() const noexcept;
     std::uint32_t stream_count() const noexcept;
 

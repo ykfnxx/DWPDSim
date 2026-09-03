@@ -1,9 +1,9 @@
 # AGENTS.md
 
 DWPDSim replays KV cache requests across memory and SLC/TLC tiers, producing
-cache metrics and generic READ/WRITE/TRIM traces. Read [README.md](README.md) for usage
-and [.design/rewrite-design.md](.design/rewrite-design.md) plus
-[.design/segment-policy-design.md](.design/segment-policy-design.md) for detailed semantics.
+cache metrics and canonical READ/WRITE/TRIM traces. Read [README.md](README.md) for current
+usage and [.design/vnext-policy-refactor.md](.design/vnext-policy-refactor.md) for the
+vNext policy and integration contract.
 
 ## Architecture and invariants
 
@@ -18,23 +18,24 @@ and [.design/rewrite-design.md](.design/rewrite-design.md) plus
   The root uses an internal slot and reserves no input hash. Preserve repeated accesses
   and input order; timestamps are nondecreasing across calls and batches. Replay each
   simulator serially.
-- Memory and storage policies choose radix segments. The simulator snapshots the global
-  segment and operates on its selected-tier subset at block granularity. Memory blocks
-  with SSD copies do not produce duplicate WRITE. SLC eviction demotes its selected
-  subset with a TLC WRITE followed by the source SLC TRIM for each block; TLC eviction
-  drops its selected subset with TRIM before the incoming WRITE.
+- Memory and storage policies choose radix segments. The simulator resolves each segment
+  top-to-endpoint and operates at block granularity. Memory blocks with SSD copies do not
+  produce duplicate WRITE. StoragePolicy owns placement, capacity reclaim, access
+  migration, and background maintenance as one coherent algorithm.
 - A node is pruned only when it has no memory or storage copy and no children. Deletion
   discards node statistics and policy-derived state; reappearance of the same hash starts
   a cold lifecycle with the same logical `NodeId`.
 - Memory hits produce no I/O. Global misses enter memory without READ. Storage hits
   always READ before any promotion-induced eviction.
-- A node may have a memory copy and at most one SSD copy. The built-in storage LRU uses
-  one-way logical SLC-to-TLC demotion; it emits no migration READ and models no transfer
-  latency. SSD internals, latency, write amplification, and DWPD belong in downstream
-  adapters/analysis, outside the cache core.
+- A node may have a memory copy and at most one SSD copy. SLC-to-TLC relocation emits one
+  READ -> WRITE -> TRIM dependency chain per block. Access relocation reuses the current
+  storage-hit READ; background relocation emits an explicit source READ. SSD internals,
+  latency, write amplification, and DWPD belong to downstream MQSim replay.
 - Stream trace output and call `finish()` before consuming it. Preserve deterministic
-  metrics and event ordering; review output producers and consumers together when
-  changing schemas. MQSim details and replay commands are in the README.
+  metrics and event ordering. Canonical schema v4 uses absolute nanoseconds, tier-local
+  streams, pool-local addresses, and per-block relocation dependencies. Review output
+  producers and consumers together when changing schemas. MQSim details and replay
+  commands are in the README.
 
 ## Engineering rules
 
@@ -60,19 +61,19 @@ and [.design/rewrite-design.md](.design/rewrite-design.md) plus
 
 ## Build and verification
 
-Run from the repository root with Python 3.11+, a C++17 compiler, CMake 3.18+, and `uv`:
+Run from the repository root with Python 3.11+, a C++17 compiler, and CMake 3.18+:
 
 ```bash
-uv sync --extra dev
-uv run ruff check .
-uv run pytest
+python3 -m pip install -e '.[dev]'
+ruff check .
+pytest
 ```
 
 After changing C++ sources, headers, bindings, or native build configuration, rebuild
 before Python tests; the editable extension does not rebuild on import:
 
 ```bash
-uv sync --extra dev --reinstall-package dwpdsim
+python3 -m pip install -e . --force-reinstall --no-deps
 ```
 
 C++ integration tests use Debug to keep their `assert` checks enabled. This separate
@@ -81,14 +82,14 @@ build does not update the extension installed in `.venv`:
 ```bash
 cmake -S . -B build/cpp-tests \
   -DCMAKE_BUILD_TYPE=Debug -DDWPDSIM_BUILD_TESTS=ON \
-  -DPython_EXECUTABLE="$(uv run python -c 'import sys; print(sys.executable)')" \
-  -Dpybind11_DIR="$(uv run python -m pybind11 --cmakedir)"
+  -DPython_EXECUTABLE="$(python3 -c 'import sys; print(sys.executable)')" \
+  -Dpybind11_DIR="$(python3 -m pybind11 --cmakedir)"
 cmake --build build/cpp-tests --config Debug
 ctest --test-dir build/cpp-tests -C Debug --output-on-failure
 ```
 
 Run affected checks: core/bindings need CTest and `tests/test_simulator.py`; Python
 changes need Ruff and relevant pytest tests. `tests/test_mqsim_pipeline.py` checks
-conversion only; use a small real MQSim replay when execution behavior changes.
+conversion and result parsing; use a small real MQSim replay when execution behavior changes.
 Benchmark hot-path changes separately with a fixed dataset and configuration.
 For documentation-only edits, verify paths/commands and run `git diff --check`.

@@ -1,10 +1,10 @@
 """DWPDSim public Python API."""
 
 from dwpdsim.config import (
+    MemoryConfig,
     MemoryPolicyConfig,
-    PlacementPolicyConfig,
     SimulationConfig,
-    StorageEvictionPolicyConfig,
+    StoragePolicyConfig,
     StorageTierConfig,
 )
 from dwpdsim.models import Request
@@ -12,10 +12,10 @@ from dwpdsim.simulator import DWPDSimulator
 
 __all__ = [
     "DWPDSimulator",
+    "MemoryConfig",
     "MemoryPolicyConfig",
-    "PlacementPolicyConfig",
     "Request",
     "SimulationConfig",
-    "StorageEvictionPolicyConfig",
+    "StoragePolicyConfig",
     "StorageTierConfig",
 ]

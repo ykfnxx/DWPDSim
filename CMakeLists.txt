@@ -13,10 +13,14 @@ add_library(
     dwpdsim_core
     STATIC
     cpp/src/metrics.cpp
-    cpp/src/policies/memory/lru_memory_policy.cpp
-    cpp/src/policies/storage_eviction/lru_storage_eviction_policy.cpp
-    cpp/src/policies/write_placement/fixed_placement_policy.cpp
-    cpp/src/policies/write_placement/ratio_placement_policy.cpp
+    cpp/src/policies/adaptive_endurance_storage_policy.cpp
+    cpp/src/policies/baseline_fixed_lru_storage_policy.cpp
+    cpp/src/policies/baseline_memory_lru_policy.cpp
+    cpp/src/policies/baseline_ratio_lru_storage_policy.cpp
+    cpp/src/policies/storage_policy.cpp
+    cpp/src/policies/storage_policy_state.cpp
+    cpp/src/policies/wear_share_affinity_storage_policy.cpp
+    cpp/src/policies/wear_share_round_robin_storage_policy.cpp
     cpp/src/radix_tree.cpp
     cpp/src/simulator.cpp
     cpp/src/storage.cpp

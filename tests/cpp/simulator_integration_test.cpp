@@ -2,7 +2,7 @@
 #include <filesystem>
 #include <fstream>
 #include <memory>
-#include <optional>
+#include <stdexcept>
 #include <string>
 #include <utility>
 #include <vector>
@@ -14,516 +14,262 @@
 
 namespace {
 
-class RecordingMemoryPolicy final : public dwpdsim::MemoryPolicyBase {
-  public:
-    bool admit_storage_hit(
-        const dwpdsim::AccessContext&,
-        const dwpdsim::Node&,
-        const dwpdsim::RadixTree&
-    ) override {
-        return true;
-    }
+using dwpdsim::AffinityId;
+using dwpdsim::HashId;
+using dwpdsim::MemoryConfig;
+using dwpdsim::MemoryEvictionAction;
+using dwpdsim::RequestId;
+using dwpdsim::SimulationConfig;
+using dwpdsim::StorageTier;
+using dwpdsim::StorageTierConfig;
+using dwpdsim::TimestampNs;
 
-    dwpdsim::NodeId choose_victim(
-        const dwpdsim::AccessContext&,
-        const dwpdsim::RadixTree& tree
-    ) override {
-        return tree.segment_leaf_for(resident_.front());
-    }
+constexpr std::uint64_t kBlockSize = 8;
+constexpr TimestampNs kSecond = 1'000'000'000ULL;
 
-    dwpdsim::EvictionAction eviction_action(
-        const dwpdsim::Node& victim,
-        const dwpdsim::AccessContext&,
-        const dwpdsim::RadixTree& tree
-    ) override {
-        decision_access_counts.push_back(victim.access_count);
-        decision_tree_visible = &victim == &tree.node(victim.hash_id);
-        return dwpdsim::EvictionAction::Drop;
-    }
-
-    void on_memory_insert(dwpdsim::NodeId node_id) override {
-        resident_.push_back(node_id);
-    }
-
-    void on_memory_access(dwpdsim::NodeId) override {}
-
-    void on_memory_remove(dwpdsim::NodeId node_id) override {
-        for (auto it = resident_.begin(); it != resident_.end(); ++it) {
-            if (*it == node_id) {
-                resident_.erase(it);
-                return;
-            }
-        }
-    }
-
-    void on_node_created(
-        dwpdsim::NodeId node_id,
-        std::optional<dwpdsim::NodeId>,
-        const dwpdsim::RadixTree& tree
-    ) override {
-        created_ids.push_back(node_id);
-        creation_access_counts.push_back(tree.node(node_id).access_count);
-    }
-
-    void on_node_removed(
-        dwpdsim::NodeId node_id,
-        std::optional<dwpdsim::NodeId>,
-        const dwpdsim::RadixTree& tree
-    ) override {
-        removed_ids.push_back(node_id);
-        removed_was_absent.push_back(!tree.contains(node_id));
-    }
-
-    void on_access_complete(
-        const dwpdsim::AccessContext& context,
-        dwpdsim::AccessResult,
-        const dwpdsim::RadixTree& tree
-    ) override {
-        completed_access_counts.push_back(tree.node(context.node_id).access_count);
-    }
-
-    std::vector<std::uint64_t> decision_access_counts;
-    std::vector<dwpdsim::NodeId> created_ids;
-    std::vector<std::uint64_t> creation_access_counts;
-    std::vector<dwpdsim::NodeId> removed_ids;
-    std::vector<bool> removed_was_absent;
-    std::vector<std::uint64_t> completed_access_counts;
-    bool decision_tree_visible = false;
-
-  private:
-    std::vector<dwpdsim::NodeId> resident_;
-};
-
-class SelectivePersistMemoryPolicy final : public dwpdsim::MemoryPolicyBase {
-  public:
-    bool admit_storage_hit(
-        const dwpdsim::AccessContext&,
-        const dwpdsim::Node&,
-        const dwpdsim::RadixTree&
-    ) override {
-        return true;
-    }
-
-    dwpdsim::NodeId choose_victim(
-        const dwpdsim::AccessContext&,
-        const dwpdsim::RadixTree& tree
-    ) override {
-        return tree.segment_leaf_for(resident_.front());
-    }
-
-    dwpdsim::EvictionAction eviction_action(
-        const dwpdsim::Node& victim,
-        const dwpdsim::AccessContext&,
-        const dwpdsim::RadixTree&
-    ) override {
-        return victim.hash_id == 1 ? dwpdsim::EvictionAction::Persist
-                                   : dwpdsim::EvictionAction::Drop;
-    }
-
-    void on_memory_insert(dwpdsim::NodeId node_id) override {
-        resident_.push_back(node_id);
-    }
-
-    void on_memory_access(dwpdsim::NodeId node_id) override {
-        remove(node_id);
-        resident_.push_back(node_id);
-    }
-
-    void on_memory_remove(dwpdsim::NodeId node_id) override {
-        remove(node_id);
-    }
-
-  private:
-    void remove(dwpdsim::NodeId node_id) {
-        for (auto it = resident_.begin(); it != resident_.end(); ++it) {
-            if (*it == node_id) {
-                resident_.erase(it);
-                return;
-            }
-        }
-    }
-
-    std::vector<dwpdsim::NodeId> resident_;
-};
-
-dwpdsim::SimulationConfig config() {
-    return dwpdsim::SimulationConfig{
-        8,
-        8,
-        dwpdsim::StorageTierConfig{8, 2},
-        dwpdsim::StorageTierConfig{16, 1},
-        "ticks",
+SimulationConfig config(
+    std::uint64_t memory_blocks,
+    std::uint64_t slc_blocks,
+    std::uint64_t tlc_blocks,
+    std::optional<TimestampNs> simulation_end_ns = std::nullopt
+) {
+    return SimulationConfig{
+        kBlockSize,
+        MemoryConfig{memory_blocks * kBlockSize},
+        StorageTierConfig{slc_blocks * kBlockSize, 2},
+        StorageTierConfig{tlc_blocks * kBlockSize, 2},
+        simulation_end_ns,
         0,
     };
 }
 
-void test_promotion_demotes_slc_before_write() {
-    const std::filesystem::path trace_path =
-        std::filesystem::temp_directory_path() / "dwpdsim-core-integration.csv";
-
-    dwpdsim::Simulator simulator(
-        config(),
-        std::make_unique<dwpdsim::LruMemoryPolicy>(
-            true,
-            dwpdsim::EvictionAction::Persist
-        ),
-        std::make_unique<dwpdsim::FixedPlacementPolicy>(dwpdsim::StorageTier::Slc, 1),
-        std::make_unique<dwpdsim::LruStorageEvictionPolicy>(),
-        trace_path
-    );
-
-    simulator.process_request(0, std::vector<dwpdsim::HashId>{1});
-    simulator.process_request(1, std::vector<dwpdsim::HashId>{2});
-    simulator.process_request(2, std::vector<dwpdsim::HashId>{1});
-    simulator.process_request(3, std::vector<dwpdsim::HashId>{1});
-    simulator.finish();
-
-    const dwpdsim::MetricsCollector& metrics = simulator.metrics();
-    assert(metrics.request_count == 4);
-    assert(metrics.block_access_count == 4);
-    assert(metrics.global_misses == 2);
-    assert(metrics.slc_hits == 1);
-    assert(metrics.memory_hits == 1);
-    assert(metrics.memory_evicted_segments == 2);
-    assert(metrics.memory_evictions == 2);
-    assert(metrics.memory_eviction_persists == 2);
-    assert(metrics.io[0].reads == 1);
-    assert(metrics.io[0].writes == 2);
-    assert(metrics.io[0].trims == 1);
-    assert(metrics.io[1].writes == 1);
-    assert(metrics.storage_evicted_segments[0] == 1);
-    assert(metrics.storage_evicted_blocks[0] == 1);
-    assert(metrics.storage_demoted_segments[0] == 1);
-    assert(metrics.storage_demoted_blocks[0] == 1);
-    assert(metrics.io[0].stream_writes[1] == 2);
-    assert(metrics.io[1].stream_writes[0] == 1);
-    assert(metrics.memory_resident_blocks == 1);
-    assert(metrics.storage_resident_blocks[0] == 1);
-    assert(metrics.storage_resident_blocks[1] == 1);
-    assert(metrics.duplicated_blocks == 1);
-    assert(simulator.trace_event_count() == 5);
-
-    const dwpdsim::NodeId first = *simulator.tree().find_root_child(1);
-    const dwpdsim::NodeId second = *simulator.tree().find_root_child(2);
-    assert(simulator.tree().node(first).in_memory);
-    assert(simulator.tree().node(first).on_storage);
-    assert(simulator.tree().node(first).storage_tier == dwpdsim::StorageTier::Tlc);
-    assert(simulator.tree().node(first).access_count == 3);
-    assert(!simulator.tree().node(second).in_memory);
-    assert(simulator.tree().node(second).on_storage);
-
-    std::ifstream trace(trace_path);
+std::vector<std::string> read_lines(const std::filesystem::path& path) {
+    std::ifstream input(path);
     std::vector<std::string> lines;
-    for (std::string line; std::getline(trace, line);) {
+    for (std::string line; std::getline(input, line);) {
         lines.push_back(std::move(line));
     }
-    assert(lines.size() == 6);
-    assert(lines[1].find(",WRITE,SLC,1,") != std::string::npos);
-    assert(lines[2].find(",READ,SLC,1,") != std::string::npos);
-    assert(lines[3].find(",WRITE,TLC,0,") != std::string::npos);
-    assert(lines[3].find(",SLC_DEMOTION") != std::string::npos);
-    assert(lines[4].find(",TRIM,SLC,1,") != std::string::npos);
-    assert(lines[4].find(",SLC_DEMOTION") != std::string::npos);
-    assert(lines[5].find(",WRITE,SLC,1,") != std::string::npos);
-    std::filesystem::remove(trace_path);
+    return lines;
 }
 
-void test_storage_hit_can_bypass_memory() {
-    const std::filesystem::path trace_path =
-        std::filesystem::temp_directory_path() / "dwpdsim-core-bypass.csv";
-    dwpdsim::SimulationConfig test_config = config();
-    test_config.slc.capacity_bytes = 16;
-
-    dwpdsim::Simulator simulator(
-        test_config,
-        std::make_unique<dwpdsim::LruMemoryPolicy>(
-            false,
-            dwpdsim::EvictionAction::Persist
-        ),
-        std::make_unique<dwpdsim::FixedPlacementPolicy>(dwpdsim::StorageTier::Slc, 0),
-        std::make_unique<dwpdsim::LruStorageEvictionPolicy>(),
-        trace_path
-    );
-
-    simulator.process_request(0, std::vector<dwpdsim::HashId>{10});
-    simulator.process_request(1, std::vector<dwpdsim::HashId>{20});
-    simulator.process_request(2, std::vector<dwpdsim::HashId>{10});
-    simulator.finish();
-
-    const dwpdsim::NodeId ten = *simulator.tree().find_root_child(10);
-    const dwpdsim::NodeId twenty = *simulator.tree().find_root_child(20);
-    assert(!simulator.tree().node(ten).in_memory);
-    assert(simulator.tree().node(ten).on_storage);
-    assert(simulator.tree().node(twenty).in_memory);
-    assert(simulator.metrics().storage_bypasses == 1);
-    assert(simulator.metrics().storage_promotions == 0);
-    assert(simulator.metrics().io[0].reads == 1);
-    std::filesystem::remove(trace_path);
+void process(
+    dwpdsim::Simulator& simulator,
+    TimestampNs timestamp_ns,
+    RequestId request_id,
+    std::vector<HashId> hashes,
+    AffinityId affinity_id = 1
+) {
+    simulator.process_request(timestamp_ns, request_id, affinity_id, hashes);
 }
 
-void test_memory_and_storage_evict_complete_segments() {
-    const std::filesystem::path trace_path =
-        std::filesystem::temp_directory_path() / "dwpdsim-core-segments.csv";
-    dwpdsim::SimulationConfig test_config = config();
-    test_config.memory_capacity_bytes = 24;
-    test_config.slc.capacity_bytes = 24;
-    test_config.tlc.capacity_bytes = 24;
-
+void dump_is_one_atomic_segment_admission() {
+    const auto trace = std::filesystem::temp_directory_path() /
+                       "dwpdsim-vnext-atomic-dump.csv";
     dwpdsim::Simulator simulator(
-        test_config,
-        std::make_unique<dwpdsim::LruMemoryPolicy>(
+        config(2, 1, 4),
+        std::make_unique<dwpdsim::BaselineMemoryLruPolicy>(
             true,
-            dwpdsim::EvictionAction::Persist
+            MemoryEvictionAction::Dump
         ),
-        std::make_unique<dwpdsim::FixedPlacementPolicy>(dwpdsim::StorageTier::Slc, 0),
-        std::make_unique<dwpdsim::LruStorageEvictionPolicy>(),
-        trace_path
-    );
-
-    simulator.process_request(0, std::vector<dwpdsim::HashId>{1, 2, 3});
-    simulator.process_request(1, std::vector<dwpdsim::HashId>{4});
-
-    assert(simulator.metrics().memory_evicted_segments == 1);
-    assert(simulator.metrics().memory_evictions == 3);
-    assert(simulator.metrics().memory_eviction_persists == 3);
-    assert(simulator.metrics().io[0].writes == 3);
-    assert(simulator.metrics().storage_resident_blocks[0] == 3);
-
-    simulator.process_request(2, std::vector<dwpdsim::HashId>{5});
-    simulator.process_request(3, std::vector<dwpdsim::HashId>{6});
-    simulator.process_request(4, std::vector<dwpdsim::HashId>{7});
-    simulator.finish();
-
-    assert(simulator.metrics().storage_evicted_segments[0] == 1);
-    assert(simulator.metrics().storage_evicted_blocks[0] == 3);
-    assert(simulator.metrics().storage_demoted_segments[0] == 1);
-    assert(simulator.metrics().storage_demoted_blocks[0] == 3);
-    assert(simulator.metrics().io[0].trims == 3);
-    assert(simulator.metrics().io[0].writes == 4);
-    assert(simulator.metrics().io[1].writes == 3);
-    assert(simulator.metrics().storage_resident_blocks[0] == 1);
-    assert(simulator.metrics().storage_resident_blocks[1] == 3);
-
-    std::ifstream trace(trace_path);
-    std::vector<std::string> lines;
-    for (std::string line; std::getline(trace, line);) {
-        lines.push_back(std::move(line));
-    }
-    assert(lines.size() == 11);
-    for (std::size_t line = 4; line < 10; line += 2) {
-        assert(lines[line].find(",WRITE,TLC,0,") != std::string::npos);
-        assert(lines[line].find(",SLC_DEMOTION") != std::string::npos);
-        assert(lines[line + 1].find(",TRIM,SLC,0,") != std::string::npos);
-        assert(lines[line + 1].find(",SLC_DEMOTION") != std::string::npos);
-    }
-    assert(lines[10].find(",WRITE,SLC,0,") != std::string::npos);
-    std::filesystem::remove(trace_path);
-}
-
-void test_slc_demotion_evicts_full_tlc_without_overwriting_segment() {
-    const std::filesystem::path trace_path =
-        std::filesystem::temp_directory_path() / "dwpdsim-core-nested-demotion.csv";
-    dwpdsim::SimulationConfig test_config = config();
-    test_config.tlc.capacity_bytes = 8;
-
-    dwpdsim::Simulator simulator(
-        test_config,
-        std::make_unique<dwpdsim::LruMemoryPolicy>(
-            true,
-            dwpdsim::EvictionAction::Persist
+        std::make_unique<dwpdsim::BaselineFixedLruStoragePolicy>(
+            dwpdsim::Placement{StorageTier::Slc, 1}
         ),
-        std::make_unique<dwpdsim::FixedPlacementPolicy>(dwpdsim::StorageTier::Slc, 1),
-        std::make_unique<dwpdsim::LruStorageEvictionPolicy>(),
-        trace_path
+        trace
     );
 
-    for (dwpdsim::HashId node_id = 1; node_id <= 4; ++node_id) {
-        simulator.process_request(node_id, std::vector<dwpdsim::HashId>{node_id});
-    }
+    process(simulator, 0, 1, {10, 20});
+    process(simulator, 1, 2, {30});
     simulator.finish();
 
-    const dwpdsim::MetricsCollector& metrics = simulator.metrics();
-    assert(metrics.storage_evicted_segments[0] == 2);
-    assert(metrics.storage_evicted_blocks[0] == 2);
-    assert(metrics.storage_demoted_segments[0] == 2);
-    assert(metrics.storage_demoted_blocks[0] == 2);
-    assert(metrics.storage_evicted_segments[1] == 1);
-    assert(metrics.storage_evicted_blocks[1] == 1);
-    assert(metrics.storage_demoted_segments[1] == 0);
-    assert(metrics.storage_demoted_blocks[1] == 0);
-    assert(metrics.io[0].writes == 3);
-    assert(metrics.io[0].trims == 2);
-    assert(metrics.io[0].reads == 0);
-    assert(metrics.io[1].writes == 2);
-    assert(metrics.io[1].trims == 1);
-    assert(metrics.io[1].reads == 0);
-    assert(metrics.storage_resident_blocks[0] == 1);
-    assert(metrics.storage_resident_blocks[1] == 1);
-    assert(!simulator.tree().contains(1));
-    assert(simulator.tree().node(2).storage_tier == dwpdsim::StorageTier::Tlc);
-    assert(simulator.tree().node(2).access_count == 1);
-
-    std::ifstream trace(trace_path);
-    std::vector<std::string> lines;
-    for (std::string line; std::getline(trace, line);) {
-        lines.push_back(std::move(line));
-    }
-    assert(lines.size() == 9);
-    assert(lines[5].find(",TRIM,TLC,0,") != std::string::npos);
-    assert(lines[5].find(",STORAGE_EVICTION") != std::string::npos);
-    assert(lines[6].find(",WRITE,TLC,0,") != std::string::npos);
-    assert(lines[6].find(",SLC_DEMOTION") != std::string::npos);
-    assert(lines[7].find(",TRIM,SLC,1,") != std::string::npos);
-    assert(lines[7].find(",SLC_DEMOTION") != std::string::npos);
-    std::filesystem::remove(trace_path);
-}
-
-void test_policy_tree_view_and_deleted_node_lifecycle() {
-    const std::filesystem::path trace_path =
-        std::filesystem::temp_directory_path() / "dwpdsim-core-policy-tree.csv";
-    auto memory_policy = std::make_unique<RecordingMemoryPolicy>();
-    RecordingMemoryPolicy* recording = memory_policy.get();
-
-    dwpdsim::Simulator simulator(
-        config(),
-        std::move(memory_policy),
-        std::make_unique<dwpdsim::FixedPlacementPolicy>(dwpdsim::StorageTier::Slc, 0),
-        std::make_unique<dwpdsim::LruStorageEvictionPolicy>(),
-        trace_path
-    );
-
-    simulator.process_request(0, std::vector<dwpdsim::HashId>{9});
-    simulator.process_request(1, std::vector<dwpdsim::HashId>{10});
-    simulator.process_request(2, std::vector<dwpdsim::HashId>{9});
-    simulator.finish();
-
-    assert(recording->decision_tree_visible);
-    assert((recording->decision_access_counts == std::vector<std::uint64_t>{1, 1}));
-    assert((recording->created_ids == std::vector<dwpdsim::NodeId>{9, 10, 9}));
-    assert((recording->creation_access_counts == std::vector<std::uint64_t>{0, 0, 0}));
-    assert((recording->removed_ids == std::vector<dwpdsim::NodeId>{9, 10}));
-    assert((recording->removed_was_absent == std::vector<bool>{true, true}));
-    assert((recording->completed_access_counts == std::vector<std::uint64_t>{1, 1, 1}));
-    assert(simulator.tree().node(9).first_seen_timestamp == 2);
-    assert(simulator.tree().node(9).access_count == 1);
-    assert(simulator.metrics().tree_nodes_created == 3);
-    assert(simulator.metrics().tree_nodes_removed == 2);
+    const auto& metrics = simulator.metrics();
+    assert(metrics.dump_requests == 1);
+    assert(metrics.dumps_admitted.segments == 0);
+    assert(metrics.dumps_rejected.segments == 1);
+    assert(metrics.dumps_rejected.blocks == 2);
+    assert(metrics.admission_rejections == 1);
+    assert(metrics.io[0].writes == 0);
     assert(simulator.tree().size() == 1);
-    std::filesystem::remove(trace_path);
+    assert(read_lines(trace).size() == 1);
+    std::filesystem::remove(trace);
 }
 
-void test_branch_node_is_an_evictable_segment_endpoint() {
-    const std::filesystem::path trace_path =
-        std::filesystem::temp_directory_path() / "dwpdsim-core-branch-endpoint.csv";
-    dwpdsim::SimulationConfig test_config = config();
-    test_config.slc.capacity_bytes = 32;
-
+void baseline_dump_and_storage_hit_use_new_interfaces() {
+    const auto trace = std::filesystem::temp_directory_path() /
+                       "dwpdsim-vnext-baseline.csv";
     dwpdsim::Simulator simulator(
-        test_config,
-        std::make_unique<dwpdsim::LruMemoryPolicy>(
+        config(1, 4, 4),
+        std::make_unique<dwpdsim::BaselineMemoryLruPolicy>(
             true,
-            dwpdsim::EvictionAction::Persist
+            MemoryEvictionAction::Dump
         ),
-        std::make_unique<dwpdsim::FixedPlacementPolicy>(dwpdsim::StorageTier::Slc, 0),
-        std::make_unique<dwpdsim::LruStorageEvictionPolicy>(),
-        trace_path
+        std::make_unique<dwpdsim::BaselineFixedLruStoragePolicy>(
+            dwpdsim::Placement{StorageTier::Slc, 1}
+        ),
+        trace
     );
 
-    simulator.process_request(0, std::vector<dwpdsim::HashId>{1, 2});
-    simulator.process_request(1, std::vector<dwpdsim::HashId>{1, 3});
+    process(simulator, 0, 1, {1});
+    process(simulator, 1, 2, {2});
+    process(simulator, 2, 3, {1});
     simulator.finish();
 
-    assert(simulator.tree().child_count(1) == 2);
-    assert(!simulator.tree().node(1).in_memory);
-    assert(simulator.tree().node(1).on_storage);
-    assert(simulator.tree().node(3).in_memory);
-    assert(simulator.metrics().memory_resident_blocks == 1);
-    assert(simulator.metrics().memory_evicted_segments == 3);
-    std::filesystem::remove(trace_path);
+    const auto& metrics = simulator.metrics();
+    assert(metrics.dumps_admitted.segments == 2);
+    assert(metrics.io[0].writes == 2);
+    assert(metrics.io[0].reads == 1);
+    assert(metrics.slc_hits == 1);
+    const auto lines = read_lines(trace);
+    assert(lines.size() == 4);
+    assert(lines[0].find("depends_on_sequence") != std::string::npos);
+    assert(lines[1].find(",WRITE,SLC,1,") != std::string::npos);
+    assert(lines[1].find(",MEMORY_DUMP,,") != std::string::npos);
+    assert(lines[2].find(",READ,SLC,1,") != std::string::npos);
+    assert(lines[2].find(",STORAGE_HIT,,") != std::string::npos);
+    std::filesystem::remove(trace);
 }
 
-void test_storage_eviction_uses_only_the_source_tier_subset() {
-    const std::filesystem::path trace_path =
-        std::filesystem::temp_directory_path() / "dwpdsim-core-tier-subset.csv";
-    dwpdsim::SimulationConfig test_config = config();
-    test_config.memory_capacity_bytes = 24;
-    test_config.slc.capacity_bytes = 16;
-    test_config.tlc.capacity_bytes = 32;
+dwpdsim::AdaptiveEndurancePolicyConfig adaptive_endurance_config(TimestampNs period_ns) {
+    dwpdsim::AdaptiveEndurancePolicyConfig policy;
+    policy.logical_fill_fraction = 1.0;
+    policy.background_period_ns = period_ns;
+    policy.promotion_seconds = 2.0;
+    policy.idle_multiplier = 1e9;
+    return policy;
+}
 
+void background_relocation_emits_explicit_read_write_trim_chain() {
+    const auto trace = std::filesystem::temp_directory_path() /
+                       "dwpdsim-vnext-background.csv";
     dwpdsim::Simulator simulator(
-        test_config,
-        std::make_unique<dwpdsim::LruMemoryPolicy>(
+        config(1, 4, 4, kSecond),
+        std::make_unique<dwpdsim::BaselineMemoryLruPolicy>(
             true,
-            dwpdsim::EvictionAction::Persist
+            MemoryEvictionAction::Dump
         ),
-        std::make_unique<dwpdsim::RatioPlacementPolicy>(0.5, 2, 1),
-        std::make_unique<dwpdsim::LruStorageEvictionPolicy>(),
-        trace_path
+        std::make_unique<dwpdsim::AdaptiveEnduranceStoragePolicy>(
+            adaptive_endurance_config(kSecond)
+        ),
+        trace
     );
 
-    simulator.process_request(0, std::vector<dwpdsim::HashId>{1, 2, 3});
-    for (dwpdsim::HashId node_id = 4; node_id <= 8; ++node_id) {
-        simulator.process_request(node_id, std::vector<dwpdsim::HashId>{node_id});
+    process(simulator, 0, 1, {1}, 77);
+    process(simulator, 0, 2, {2}, 88);
+    simulator.finish();
+
+    const auto& metrics = simulator.metrics();
+    assert(metrics.background_ticks == 1);
+    assert(metrics.background_migrations.segments == 1);
+    assert(metrics.relocation_explicit_read_blocks == 1);
+    assert(metrics.relocation_reused_read_blocks == 0);
+    assert(metrics.io[0].reads == 1);
+    assert(metrics.io[1].writes == 1);
+    assert(metrics.io[0].trims == 1);
+
+    const auto lines = read_lines(trace);
+    assert(lines.size() == 5);
+    assert(lines[2].find(",READ,SLC,") != std::string::npos);
+    assert(lines[2].find(",BACKGROUND_MIGRATION,1,") != std::string::npos);
+    assert(lines[3].find(",WRITE,TLC,") != std::string::npos);
+    assert(lines[3].find(",BACKGROUND_MIGRATION,1,1") != std::string::npos);
+    assert(lines[4].find(",TRIM,SLC,") != std::string::npos);
+    assert(lines[4].find(",BACKGROUND_MIGRATION,1,2") != std::string::npos);
+    std::filesystem::remove(trace);
+}
+
+void access_relocation_reuses_storage_hit_read() {
+    const auto trace = std::filesystem::temp_directory_path() /
+                       "dwpdsim-vnext-access.csv";
+    dwpdsim::Simulator simulator(
+        config(1, 4, 8),
+        std::make_unique<dwpdsim::BaselineMemoryLruPolicy>(
+            true,
+            MemoryEvictionAction::Dump
+        ),
+        std::make_unique<dwpdsim::AdaptiveEnduranceStoragePolicy>(
+            adaptive_endurance_config(0)
+        ),
+        trace
+    );
+
+    process(simulator, 0, 1, {1}, 99);
+    process(simulator, 0, 2, {2}, 100);
+    process(simulator, kSecond, 3, {1}, 99);
+    simulator.finish();
+
+    const auto& metrics = simulator.metrics();
+    assert(metrics.access_migrations.segments == 1);
+    assert(metrics.relocation_reused_read_blocks == 1);
+    assert(metrics.relocation_explicit_read_blocks == 0);
+    assert(metrics.io[0].reads == 1);
+
+    const auto lines = read_lines(trace);
+    assert(lines[2].find(",READ,SLC,") != std::string::npos);
+    assert(lines[2].find(",STORAGE_HIT,1,") != std::string::npos);
+    assert(lines[3].find(",WRITE,TLC,") != std::string::npos);
+    assert(lines[3].find(",ACCESS_MIGRATION,1,1") != std::string::npos);
+    assert(lines[4].find(",TRIM,SLC,") != std::string::npos);
+    assert(lines[4].find(",ACCESS_MIGRATION,1,2") != std::string::npos);
+    std::filesystem::remove(trace);
+}
+
+void request_ids_are_unique_and_timestamps_are_monotonic() {
+    const auto trace = std::filesystem::temp_directory_path() /
+                       "dwpdsim-vnext-input-contract.csv";
+    dwpdsim::Simulator simulator(
+        config(2, 2, 2),
+        std::make_unique<dwpdsim::BaselineMemoryLruPolicy>(),
+        std::make_unique<dwpdsim::BaselineFixedLruStoragePolicy>(
+            dwpdsim::Placement{StorageTier::Tlc, 0}
+        ),
+        trace
+    );
+    process(simulator, 10, 1, {1});
+    bool duplicate_failed = false;
+    try {
+        process(simulator, 10, 1, {2});
+    } catch (const std::invalid_argument&) {
+        duplicate_failed = true;
     }
+    assert(duplicate_failed);
+    bool timestamp_failed = false;
+    try {
+        process(simulator, 9, 2, {2});
+    } catch (const std::invalid_argument&) {
+        timestamp_failed = true;
+    }
+    assert(timestamp_failed);
     simulator.finish();
-
-    assert(simulator.metrics().storage_evicted_segments[0] == 1);
-    assert(simulator.metrics().storage_evicted_blocks[0] == 2);
-    assert(simulator.metrics().storage_demoted_segments[0] == 1);
-    assert(simulator.metrics().storage_demoted_blocks[0] == 2);
-    assert(simulator.metrics().storage_evicted_segments[1] == 0);
-    assert(simulator.metrics().storage_evicted_blocks[1] == 0);
-    assert(simulator.tree().node(3).on_storage);
-    assert(simulator.tree().node(3).storage_tier == dwpdsim::StorageTier::Tlc);
-    assert(simulator.tree().node(2).on_storage);
-    assert(simulator.tree().node(2).storage_tier == dwpdsim::StorageTier::Tlc);
-    assert(simulator.tree().node(1).on_storage);
-    assert(simulator.tree().node(1).storage_tier == dwpdsim::StorageTier::Tlc);
-    std::filesystem::remove(trace_path);
+    std::filesystem::remove(trace);
 }
 
-void test_memory_segment_keeps_per_block_copy_actions() {
-    const std::filesystem::path trace_path =
-        std::filesystem::temp_directory_path() / "dwpdsim-core-mixed-copies.csv";
-    dwpdsim::SimulationConfig test_config = config();
-    test_config.memory_capacity_bytes = 24;
-    test_config.slc.capacity_bytes = 32;
-
-    dwpdsim::Simulator simulator(
-        test_config,
-        std::make_unique<SelectivePersistMemoryPolicy>(),
-        std::make_unique<dwpdsim::FixedPlacementPolicy>(dwpdsim::StorageTier::Slc, 0),
-        std::make_unique<dwpdsim::LruStorageEvictionPolicy>(),
-        trace_path
-    );
-
-    simulator.process_request(0, std::vector<dwpdsim::HashId>{1, 2, 3});
-    simulator.process_request(1, std::vector<dwpdsim::HashId>{4});
-    assert(simulator.metrics().io[0].writes == 1);
-
-    simulator.process_request(2, std::vector<dwpdsim::HashId>{1, 2, 3});
-    simulator.process_request(3, std::vector<dwpdsim::HashId>{5});
-    simulator.finish();
-
-    assert(simulator.metrics().memory_evicted_segments == 3);
-    assert(simulator.metrics().memory_evictions == 7);
-    assert(simulator.metrics().memory_evictions_with_storage_copy == 1);
-    assert(simulator.metrics().memory_eviction_persists == 1);
-    assert(simulator.metrics().memory_eviction_drops == 5);
-    assert(simulator.metrics().io[0].writes == 1);
-    std::filesystem::remove(trace_path);
+void configuration_rejects_more_than_eight_total_streams() {
+    auto invalid_config = config(2, 2, 2);
+    invalid_config.slc.stream_count = 5;
+    invalid_config.tlc.stream_count = 4;
+    bool failed = false;
+    try {
+        dwpdsim::Simulator simulator(
+            invalid_config,
+            std::make_unique<dwpdsim::BaselineMemoryLruPolicy>(),
+            std::make_unique<dwpdsim::BaselineFixedLruStoragePolicy>(
+                dwpdsim::Placement{StorageTier::Tlc, 0}
+            ),
+            std::filesystem::temp_directory_path() / "dwpdsim-vnext-stream-limit.csv"
+        );
+    } catch (const std::invalid_argument&) {
+        failed = true;
+    }
+    assert(failed);
 }
 
 }  // namespace
 
 int main() {
-    test_promotion_demotes_slc_before_write();
-    test_storage_hit_can_bypass_memory();
-    test_memory_and_storage_evict_complete_segments();
-    test_slc_demotion_evicts_full_tlc_without_overwriting_segment();
-    test_policy_tree_view_and_deleted_node_lifecycle();
-    test_branch_node_is_an_evictable_segment_endpoint();
-    test_storage_eviction_uses_only_the_source_tier_subset();
-    test_memory_segment_keeps_per_block_copy_actions();
+    dump_is_one_atomic_segment_admission();
+    baseline_dump_and_storage_hit_use_new_interfaces();
+    background_relocation_emits_explicit_read_write_trim_chain();
+    access_relocation_reuses_storage_hit_read();
+    request_ids_are_unique_and_timestamps_are_monotonic();
+    configuration_rejects_more_than_eight_total_streams();
     return 0;
 }

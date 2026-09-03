@@ -1,21 +1,27 @@
 #pragma once
 
 #include <cstdint>
-#include <string>
+#include <optional>
+
+#include "dwpdsim/types.hpp"
 
 namespace dwpdsim {
 
+struct MemoryConfig {
+    std::uint64_t capacity_bytes = 0;
+};
+
 struct StorageTierConfig {
-    std::uint64_t capacity_bytes;
-    std::uint32_t stream_count;
+    std::uint64_t capacity_bytes = 0;
+    std::uint32_t stream_count = 0;
 };
 
 struct SimulationConfig {
     std::uint64_t block_size_bytes = 8ULL * 1024ULL * 1024ULL;
-    std::uint64_t memory_capacity_bytes = 0;
+    MemoryConfig memory{};
     StorageTierConfig slc{};
     StorageTierConfig tlc{};
-    std::string timestamp_unit = "unspecified";
+    std::optional<TimestampNs> simulation_end_ns;
     std::uint64_t progress_interval_requests = 0;
 };
 

@@ -1,5 +1,6 @@
 #include "dwpdsim/radix_tree.hpp"
 
+#include <algorithm>
 #include <cstddef>
 
 namespace dwpdsim {
@@ -10,23 +11,23 @@ RadixTree::RadixTree() {
 
 std::pair<NodeId, bool> RadixTree::get_or_create_root(
     HashId hash_id,
-    Timestamp timestamp
+    TimestampNs timestamp_ns
 ) {
-    return get_or_create_at(kRootSlot, hash_id, timestamp);
+    return get_or_create_at(kRootSlot, hash_id, timestamp_ns);
 }
 
 std::pair<NodeId, bool> RadixTree::get_or_create(
     NodeId parent_id,
     HashId hash_id,
-    Timestamp timestamp
+    TimestampNs timestamp_ns
 ) {
-    return get_or_create_at(slot(parent_id), hash_id, timestamp);
+    return get_or_create_at(slot(parent_id), hash_id, timestamp_ns);
 }
 
 std::pair<NodeId, bool> RadixTree::get_or_create_at(
     NodeSlot parent_slot,
     HashId hash_id,
-    Timestamp timestamp
+    TimestampNs timestamp_ns
 ) {
     const auto existing = node_index_.find(hash_id);
     if (existing != node_index_.end()) {
@@ -45,7 +46,7 @@ std::pair<NodeId, bool> RadixTree::get_or_create_at(
     NodeRecord& record = nodes_[node_slot];
     record = NodeRecord{};
     record.node.hash_id = hash_id;
-    record.node.first_seen_timestamp = timestamp;
+    record.node.first_seen_timestamp_ns = timestamp_ns;
     record.parent = parent_slot;
 
     NodeRecord& parent = nodes_[parent_slot];
@@ -133,10 +134,43 @@ void RadixTree::resolve_segment(NodeId endpoint, std::vector<NodeId>& segment) c
         segment.push_back(id(current));
         const NodeSlot parent_slot = nodes_[current].parent;
         if (parent_slot == kRootSlot || nodes_[parent_slot].child_count >= 2) {
+            std::reverse(segment.begin(), segment.end());
             return;
         }
         current = parent_slot;
     }
+}
+
+void RadixTree::children(NodeId node_id, std::vector<NodeId>& output) const {
+    output.clear();
+    NodeSlot child = nodes_[slot(node_id)].first_child;
+    while (child != kInvalidNodeSlot) {
+        output.push_back(id(child));
+        child = nodes_[child].next_sibling;
+    }
+    std::sort(output.begin(), output.end());
+}
+
+bool RadixTree::has_storage_descendant(NodeId node_id) const {
+    std::vector<NodeSlot> pending;
+    NodeSlot child = nodes_[slot(node_id)].first_child;
+    while (child != kInvalidNodeSlot) {
+        pending.push_back(child);
+        child = nodes_[child].next_sibling;
+    }
+    while (!pending.empty()) {
+        const NodeSlot current = pending.back();
+        pending.pop_back();
+        if (nodes_[current].node.on_storage) {
+            return true;
+        }
+        child = nodes_[current].first_child;
+        while (child != kInvalidNodeSlot) {
+            pending.push_back(child);
+            child = nodes_[child].next_sibling;
+        }
+    }
+    return false;
 }
 
 NodeId RadixTree::segment_leaf_for(NodeId node_id) const noexcept {
@@ -147,12 +181,12 @@ NodeId RadixTree::segment_leaf_for(NodeId node_id) const noexcept {
     return id(current);
 }
 
-void RadixTree::record_access(NodeId node_id, Timestamp timestamp, bool hit) noexcept {
+void RadixTree::record_access(NodeId node_id, TimestampNs timestamp_ns, bool hit) noexcept {
     Node& entry = node(node_id);
-    entry.last_access_timestamp = timestamp;
+    entry.last_access_timestamp_ns = timestamp_ns;
     ++entry.access_count;
     if (hit) {
-        entry.last_hit_timestamp = timestamp;
+        entry.last_hit_timestamp_ns = timestamp_ns;
         entry.has_last_hit = true;
     }
 }

@@ -1,9 +1,10 @@
 #pragma once
 
-#include "dwpdsim/policies/memory/lru_memory_policy.hpp"
-#include "dwpdsim/policies/memory/memory_policy_base.hpp"
-#include "dwpdsim/policies/storage_eviction/lru_storage_eviction_policy.hpp"
-#include "dwpdsim/policies/storage_eviction/storage_eviction_policy_base.hpp"
-#include "dwpdsim/policies/write_placement/fixed_placement_policy.hpp"
-#include "dwpdsim/policies/write_placement/ratio_placement_policy.hpp"
-#include "dwpdsim/policies/write_placement/write_placement_policy_base.hpp"
+#include "dwpdsim/policies/adaptive_endurance_storage_policy.hpp"
+#include "dwpdsim/policies/baseline_fixed_lru_storage_policy.hpp"
+#include "dwpdsim/policies/baseline_memory_lru_policy.hpp"
+#include "dwpdsim/policies/baseline_ratio_lru_storage_policy.hpp"
+#include "dwpdsim/policies/memory_policy.hpp"
+#include "dwpdsim/policies/storage_policy.hpp"
+#include "dwpdsim/policies/wear_share_affinity_storage_policy.hpp"
+#include "dwpdsim/policies/wear_share_round_robin_storage_policy.hpp"

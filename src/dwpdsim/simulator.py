@@ -1,4 +1,4 @@
-"""Thin Python facade over the C++ simulation core."""
+"""Python facade over the C++ simulation core."""
 
 from __future__ import annotations
 
@@ -12,40 +12,36 @@ from types import TracebackType
 from typing import Any, Self
 
 from dwpdsim import _core
-from dwpdsim.config import (
-    MemoryPolicyConfig,
-    PlacementPolicyConfig,
-    SimulationConfig,
-    StorageEvictionPolicyConfig,
-)
+from dwpdsim.config import SimulationConfig
 from dwpdsim.models import Request
 
 logger = logging.getLogger(__name__)
 
 
 class DWPDSimulator:
-    """Replay KV block requests through the C++ cache state machine."""
+    """Replay requests through one shared RadixTree and two storage pools."""
 
     def __init__(
         self,
         config: SimulationConfig,
         trace_path: str | PathLike[str],
-        *,
-        memory_policy: MemoryPolicyConfig | None = None,
-        placement_policy: PlacementPolicyConfig | None = None,
-        storage_eviction_policy: StorageEvictionPolicyConfig | None = None,
     ) -> None:
-        memory = memory_policy or MemoryPolicyConfig()
-        placement = placement_policy or PlacementPolicyConfig()
-        storage_eviction = storage_eviction_policy or StorageEvictionPolicyConfig()
-
         core_config = _core.SimulationConfig()
         core_config.block_size_bytes = config.block_size_bytes
-        core_config.memory_capacity_bytes = config.memory_capacity_bytes
-        core_config.timestamp_unit = config.timestamp_unit
-        core_config.progress_interval_requests = config.progress_interval_requests
+        core_config.memory = self._memory_config(config.memory)
         core_config.slc = self._storage_tier_config(config.slc)
         core_config.tlc = self._storage_tier_config(config.tlc)
+        core_config.simulation_end_ns = config.simulation_end_ns
+        core_config.progress_interval_requests = config.progress_interval_requests
+
+        memory = config.memory_policy
+        storage = config.storage_policy
+        slc_host_share = storage.slc_host_share
+        if slc_host_share is None:
+            slc_host_share = {
+                "wear_share_round_robin": 0.405,
+                "wear_share_affinity": 0.68,
+            }.get(storage.kind, 0.8333333333)
 
         self.config = config
         self.trace_path = Path(trace_path)
@@ -55,11 +51,21 @@ class DWPDSimulator:
             memory_policy=memory.kind,
             admit_storage_hits=memory.admit_storage_hits,
             memory_eviction_action=memory.eviction_action,
-            placement_policy=placement.kind,
-            fixed_tier=placement.fixed_tier,
-            fixed_stream_id=placement.fixed_stream_id,
-            slc_write_ratio=placement.slc_write_ratio,
-            storage_eviction_policy=storage_eviction.kind,
+            storage_policy=storage.kind,
+            fixed_tier=storage.fixed_tier,
+            fixed_stream_id=storage.fixed_stream_id,
+            slc_write_ratio=storage.slc_write_ratio,
+            slc_host_share=slc_host_share,
+            idle_multiplier=storage.idle_multiplier,
+            promotion_seconds=storage.promotion_seconds,
+            adaptation_gain=storage.adaptation_gain,
+            direct_gain=storage.direct_gain,
+            slc_soft_utilization=storage.slc_soft_utilization,
+            occupancy_decay=storage.occupancy_decay,
+            logical_fill_fraction=storage.logical_fill_fraction,
+            slc_erase_budget=storage.slc_erase_budget,
+            tlc_erase_budget=storage.tlc_erase_budget,
+            background_period_ns=storage.background_period_ns,
         )
         self._processed_requests = 0
         self._next_progress_request = config.progress_interval_requests
@@ -67,10 +73,16 @@ class DWPDSimulator:
         logger.info(
             "started DWPDSim block_size=%d memory_bytes=%d slc_bytes=%d tlc_bytes=%d",
             config.block_size_bytes,
-            config.memory_capacity_bytes,
+            config.memory.capacity_bytes,
             config.slc.capacity_bytes,
             config.tlc.capacity_bytes,
         )
+
+    @staticmethod
+    def _memory_config(config: Any):
+        result = _core.MemoryConfig()
+        result.capacity_bytes = config.capacity_bytes
+        return result
 
     @staticmethod
     def _storage_tier_config(config: Any):
@@ -79,25 +91,49 @@ class DWPDSimulator:
         result.stream_count = config.stream_count
         return result
 
-    def process(self, timestamp: int, hash_ids: Sequence[int]) -> None:
-        """Process one request. Prefer ``process_batch`` for large datasets."""
+    def process(
+        self,
+        timestamp_ns: int,
+        request_id: int,
+        affinity_id: int,
+        hash_ids: Sequence[int],
+    ) -> None:
+        """Process one request on the nanosecond timeline."""
 
-        self._core.process(timestamp, hash_ids)
+        self._core.process(timestamp_ns, request_id, affinity_id, hash_ids)
         self._processed_requests += 1
         self._log_progress()
 
-    def process_batch(self, timestamps: Any, offsets: Any, hash_ids: Any) -> None:
-        """Process contiguous uint64 request buffers without per-block Python calls."""
+    def process_batch(
+        self,
+        timestamps_ns: Any,
+        request_ids: Any,
+        affinity_ids: Any,
+        offsets: Any,
+        hash_ids: Any,
+    ) -> None:
+        """Process contiguous uint64 request buffers."""
 
-        self._core.process_batch(timestamps, offsets, hash_ids)
-        self._processed_requests += len(timestamps)
+        self._core.process_batch(
+            timestamps_ns,
+            request_ids,
+            affinity_ids,
+            offsets,
+            hash_ids,
+        )
+        self._processed_requests += len(timestamps_ns)
         self._log_progress()
 
     def run(self, requests: Iterable[Request]) -> dict[str, Any]:
-        """Convenience path for small iterables of requests."""
+        """Process a small iterable of requests."""
 
         for request in requests:
-            self.process(request.timestamp, request.hash_ids)
+            self.process(
+                request.timestamp_ns,
+                request.request_id,
+                request.affinity_id,
+                request.hash_ids,
+            )
         return self.stats()
 
     def stats(self) -> dict[str, Any]:
@@ -110,7 +146,8 @@ class DWPDSimulator:
         self._core.finish()
         stats = self.stats()
         logger.info(
-            "finished DWPDSim requests=%d accesses=%d hit_rate=%.6f trace_events=%d elapsed_s=%.3f",
+            "finished DWPDSim requests=%d accesses=%d hit_rate=%.6f trace_events=%d "
+            "elapsed_s=%.3f",
             stats["accesses"]["requests"],
             stats["accesses"]["total"],
             stats["accesses"]["total_hit_rate"],
@@ -144,12 +181,12 @@ class DWPDSimulator:
         if interval and self._processed_requests >= self._next_progress_request:
             stats = self.stats()
             logger.info(
-                "DWPDSim progress requests=%d accesses=%d memory_blocks=%d slc_blocks=%d "
-                "tlc_blocks=%d",
+                "DWPDSim progress requests=%d accesses=%d memory_blocks=%d "
+                "slc_live_bytes=%d tlc_live_bytes=%d",
                 stats["accesses"]["requests"],
                 stats["accesses"]["total"],
                 stats["memory"]["resident_blocks"],
-                stats["storage"]["slc"]["resident_blocks"],
-                stats["storage"]["tlc"]["resident_blocks"],
+                stats["storage"]["slc"]["live_bytes"],
+                stats["storage"]["tlc"]["live_bytes"],
             )
             self._next_progress_request = (self._processed_requests // interval + 1) * interval

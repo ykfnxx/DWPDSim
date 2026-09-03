@@ -1,4 +1,4 @@
-"""Input data objects used by the convenience Python API."""
+"""Input data objects for DWPDSim."""
 
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -6,7 +6,9 @@ from dataclasses import dataclass
 
 @dataclass(frozen=True, slots=True)
 class Request:
-    """One timestamped, ordered sequence of uint64 block hashes."""
+    """One ordered request on the global nanosecond timeline."""
 
-    timestamp: int
+    timestamp_ns: int
+    request_id: int
+    affinity_id: int
     hash_ids: Sequence[int]

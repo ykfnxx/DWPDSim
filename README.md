@@ -1,50 +1,38 @@
 # DWPDSim
 
-DWPDSim 回放 vLLM KVConnector 收到的 KV cache block 请求，模拟 block 在内存、SLC
-和 TLC 中的驻留与淘汰，并输出缓存统计和通用 SSD I/O trace。
-
-模拟核心使用 C++17，Python 只负责数据集适配、批量输入和结果处理。完整设计见
-[`.design/rewrite-design.md`](.design/rewrite-design.md) 和
-[`.design/segment-policy-design.md`](.design/segment-policy-design.md)。
+DWPDSim 回放 KV cache block 请求，在一棵公共 RadixTree 上模拟内存、SLC 和 TLC 的驻留、
+placement、淘汰与迁移。C++17 core 是逻辑状态、pool-local 地址、虚拟时间、trace 和 metrics
+的唯一所有者；policy 只读取视图并返回决策。vNext 是破坏性接口，设计契约见
+[`.design/vnext-policy-refactor.md`](.design/vnext-policy-refactor.md)。
 
 ## 行为语义
 
-输入中的一条请求为有序的 uint64 hash 序列：
+每条请求携带全局纳秒时间、唯一 request id、用于 stream placement/session gap 的 affinity id，
+以及完整有序的 hash path。`hash_id` 同时是全局唯一 `NodeId`，parent link 只表达前缀拓扑。
 
-```python
-Request(timestamp=100, hash_ids=[11, 22, 33])
-```
+- memory hit 不产生 I/O；
+- storage hit 产生 READ，MemoryPolicy 决定是否提升到内存；
+- global miss 代表计算出新 block，并加入内存，不产生 READ；
+- 内存以 top-to-endpoint Radix segment 淘汰；只有 `Dump` 能把尚无 storage copy 的 block 写入
+  SLC/TLC，`Drop` 直接释放内存副本；
+- StoragePolicy 统一决定 Dump placement、同步 capacity reclaim、access migration 和后台维护；
+- relocation 是管理意图，不是设备 opcode。Simulator 将每个 block 展开为
+  `READ(source) -> WRITE(destination) -> TRIM(source)`；access migration 复用本次 storage-hit
+  READ，后台 migration 显式产生 READ；
+- adaptive-endurance policy 的后台 tick 独立于前台请求运行。相同 timestamp 的 tick 先执行，`finish()` 会将
+  虚拟时间推进至配置中冻结的 `simulation_end_ns`；Python `finish()` 不另接收终点参数。
 
-每个输入 `hash_id` 是全局唯一逻辑 block 标识，并直接作为 `NodeId`；parent 只表达前缀
-拓扑，不参与节点身份。对每个节点：
+DWPDSim 不模拟 SSD 内部 GC、NAND latency、擦除或物理写放大；这些由下游 MQSim 计算。
 
-- 内存存在：memory hit，不产生 SSD I/O；
-- 内存不存在、SLC/TLC 存在：产生 READ，MemoryPolicy 决定是否提升到内存；
-- 三处均不存在：global miss，认为计算完成并强制加入内存；
-- 内存淘汰以 radix segment 为逻辑批次；segment 内每个 block 独立决定复用盘上副本、
-  丢弃或由 WritePlacementPolicy 选择层级和 stream 后写盘；
-- SLC 满时，StorageEvictionPolicy 选择 segment，内置 LRU 将其 SLC 子集逐 block 迁到
-  TLC；每个 block 依次产生 TLC WRITE 和源 SLC TRIM，之后再执行当前 SLC WRITE；
-- TLC 满时，内置 LRU 对所选 segment 的 TLC 子集逐 block 产生 TRIM，再执行目标 TLC
-  WRITE；SLC 迁移时如果 TLC 已满，同样先执行这一步；
-- block 在所有层级消失且没有 child 后从树中删除，访问统计随之丢弃。
+## 安装与验证
 
-SLC 到 TLC 是逻辑位置迁移，不建立双副本，也不额外产生迁移 READ。DWPDSim 不模拟 SSD
-内部 GC、擦除、真实数据传输或设备延迟。
-
-## 安装
-
-需要 Python 3.11+、C++17 编译器和 CMake：
+需要 Python 3.11+、CMake 3.18+ 和 C++17 编译器：
 
 ```bash
-python -m pip install -e .
-```
-
-开发环境：
-
-```bash
-uv sync --extra dev
-uv run pytest
+python3 -m pip install -e .
+python3 -m pip install -e '.[dev]'
+ruff check .
+pytest
 ```
 
 ## 基本用法
@@ -52,129 +40,128 @@ uv run pytest
 ```python
 from dwpdsim import (
     DWPDSimulator,
-    PlacementPolicyConfig,
+    MemoryConfig,
     Request,
     SimulationConfig,
+    StoragePolicyConfig,
     StorageTierConfig,
 )
 
 MIB = 1024 * 1024
+BLOCK_SIZE = 4096
 config = SimulationConfig(
-    block_size_bytes=8 * MIB,
-    memory_capacity_bytes=2 * 8 * MIB,
-    slc=StorageTierConfig(capacity_bytes=64 * 8 * MIB, stream_count=2),
-    tlc=StorageTierConfig(capacity_bytes=128 * 8 * MIB, stream_count=4),
-    timestamp_unit="us",
-)
-
-with DWPDSimulator(
-    config,
-    "trace.csv",
-    placement_policy=PlacementPolicyConfig(
-        kind="fixed",
+    block_size_bytes=BLOCK_SIZE,
+    memory=MemoryConfig(capacity_bytes=2 * BLOCK_SIZE),
+    slc=StorageTierConfig(capacity_bytes=MIB, stream_count=2),
+    tlc=StorageTierConfig(capacity_bytes=MIB, stream_count=2),
+    storage_policy=StoragePolicyConfig(
+        kind="baseline_fixed_lru",
         fixed_tier="tlc",
         fixed_stream_id=0,
     ),
-) as simulator:
+)
+
+with DWPDSimulator(config, "simulation_trace.csv") as simulator:
     simulator.run(
         [
-            Request(0, [1, 2, 3]),
-            Request(10, [1, 2, 4]),
-            Request(20, [5, 6]),
+            Request(0, 1, 10, [1, 2, 3]),
+            Request(1_000_000_000, 2, 10, [1, 2, 4]),
+            Request(2_000_000_000, 3, 20, [5, 6]),
         ]
     )
 
-simulator.write_stats("metrics.json")
+simulator.write_stats("simulation_metrics.json")
 ```
 
-`trace.csv` 包含 READ、WRITE、TRIM，以及对应的 `storage_tier`、stream、逻辑地址、树节点
-和 hash。WRITE 必定带有 stream 信息。
+`Request` 的位置参数依次是 `timestamp_ns, request_id, affinity_id, hash_ids`。request id 必须唯一，
+timestamp 必须非递减。
 
 ## 批量输入
 
-大数据集应使用三个连续的 uint64 buffer，避免逐 block 进入 Python：
+大数据集使用五个连续的 `uint64` buffer。第 `i` 条请求对应
+`hash_ids[offsets[i]:offsets[i + 1]]`：
 
 ```python
 import numpy as np
 
-timestamps = np.asarray([0, 10], dtype=np.uint64)
-offsets = np.asarray([0, 3, 5], dtype=np.uint64)
-hash_ids = np.asarray([1, 2, 3, 1, 4], dtype=np.uint64)
-
-simulator.process_batch(timestamps, offsets, hash_ids)
+simulator.process_batch(
+    np.asarray([0, 10], dtype=np.uint64),          # timestamps_ns
+    np.asarray([100, 101], dtype=np.uint64),       # request_ids
+    np.asarray([7, 7], dtype=np.uint64),           # affinity_ids
+    np.asarray([0, 3, 5], dtype=np.uint64),        # offsets
+    np.asarray([1, 2, 3, 1, 4], dtype=np.uint64), # hash_ids
+)
 ```
 
-第 `i` 条请求对应 `hash_ids[offsets[i]:offsets[i + 1]]`。C++ 处理 batch 时释放 GIL。
+批量和逐请求接口产生相同的 tick、决策、trace 和 metrics。
 
-## Policy 开发
+## Policy
 
-- MemoryPolicyBase：LRU，可配置 storage hit 是否提升，以及 segment 中无盘副本 block 使用
-  `drop` 或 `persist`；
-- WritePlacementPolicyBase：固定层级/stream，或按比例分配 SLC/TLC 并轮转 stream；迁移
-  使用 `place_on_tier()` 为已确定的 TLC 选择 stream，不改变原始写入比例；
-- StorageEvictionPolicyBase：选择淘汰 segment，并返回 `DROP` 或 `DEMOTE_TO_TLC`；内置
-  LRU 对 SLC 选择迁移、对 TLC 选择删除，两个层级仍各自维护 LRU 顺序。
+顶层接口只有 `MemoryPolicy` 和 `StoragePolicy`：
 
-三类 policy 都是独立的 C++ 抽象接口，决策接口接收只读 `RadixTree`，并可通过节点创建、
-删除和访问完成通知维护派生状态。新增算法时直接实现对应接口并在 pybind11 构造入口注册，
-不使用逐访问的 Python callback。
+- `baseline_lru`：memory admission 与 segment LRU，淘汰动作可配置为 `dump` 或 `drop`；
+- `baseline_fixed_lru`：固定 tier/stream placement，leaf-LRU capacity reclaim；
+- `baseline_ratio_lru`：按 SLC write ratio placement，pool 内 round-robin stream；
+- `wear_share_round_robin`：wear-share tier placement 与 pool 内 round-robin stream；
+- `wear_share_affinity`：wear-share tier placement 与 affinity hash stream；
+- `adaptive_endurance`：endurance-weighted placement、session gap/q95、自适应 promotion、access
+  migration、周期 idle eviction 和后台 migration。
 
-头文件和实现分别位于 `cpp/include/dwpdsim/policies/` 与 `cpp/src/policies/`，再按
-`memory/`、`write_placement/`、`storage_eviction/` 分类。每个具体 policy 独占一组
-`.hpp/.cpp` 文件，类别目录中的 `*_policy_base.hpp` 定义基类。`dwpdsim/policies.hpp`
-只作为兼容聚合头；开发单个策略时应直接 include 对应类别下的头文件。
+所有 storage 决策共用一个 policy state，并只通过 commit notification 更新。实现位于
+`cpp/include/dwpdsim/policies/` 和 `cpp/src/policies/`；Simulator 保持 RadixTree、StorageState
+和 LBA allocator 的唯一写权限。
 
-## 输出指标
+## Canonical trace 与 metrics
 
-`metrics.json` 包含：
+trace schema version 4 固定为 14 列：
 
-- Request 和 block access 数；
-- memory/SLC/TLC hit、global miss 及命中率；
-- promote、bypass、segment/block 淘汰、drop、persist；
-- SLC/TLC 的 READ、WRITE、TRIM 数量和字节数；
-- SLC/TLC 离开源层级的淘汰 segment/block 数，以及其中迁到 TLC 的 segment/block 数；
-- 每个 stream 的写入量；
-- 当前及峰值驻留量、重复副本数、当前树节点数以及节点创建/删除数。
+```text
+sequence,timestamp_ns,request_id,access_sequence,operation,storage_tier,stream_id,offset_bytes,length_bytes,node_id,hash_id,reason,move_id,depends_on_sequence
+```
 
-写放大、GC、擦除和 DWPD 不属于核心模拟结果，可在下游 SSD 模拟或分析中计算。
+operation 只有 `READ`、`WRITE`、`TRIM`。`sequence` 是全局 semantic I/O 编号；offset 是原始
+pool-local byte address；stream id 是 tier-local。relocation 的同一 segment 共用 `move_id`，
+每个 block 各自形成 READ、WRITE、TRIM completion chain。非 relocation I/O 不设置 dependency。
 
-SLC 迁移在通用 trace 中表现为 TLC `WRITE` 和 SLC `TRIM`，reason 均为
-`SLC_DEMOTION`；`storage_tier` 字段对应的 trace schema version 为 3。MQSim pipeline 会把它们
-分别送入 TLC 和 SLC 设备模拟；当前不会把两个设备的完成事件串成一条跨层级迁移延迟。
+`metrics.json` 的主要口径包括：request/block accesses 与 hit rate、Dump admission/rejection、
+前台 capacity eviction、后台 tick/idle eviction、三类 migration、relocation source read/
+destination write/source trim、SLC/TLC live/peak/program/host-write bytes、每 stream write bytes、
+adaptive-endurance gap/q95/idle threshold、placement 和错误计数。DWPDSim 的
+`host_write_bytes` 只统计
+Memory Dump；relocation destination WRITE 只进入 program bytes。
 
 ## MQSim pipeline
 
-仓库中的适配器可将通用 CSV trace 按层级和 stream 转换为本地 MQSim trace，分别运行
-SLC 与 TLC 仿真，并将关键结果汇总为 JSON。先编译同级目录中的 MQSim：
+配套 MQSim vNext 在一次运行中回放全部 SLC/TLC flow。先编译同级 MQSim，然后运行：
 
 ```bash
 make -C ../MQSim
-```
-
-然后使用 DWPDSim 生成的 trace 和 metrics：
-
-```bash
-uv run python scripts/mqsim_pipeline.py trace.csv metrics.json \
+python3 scripts/mqsim_pipeline.py simulation_trace.csv simulation_metrics.json \
   --mqsim-binary ../MQSim/MQSim \
-  --slc-config example/mqsim/ssdconfig-slc.xml \
-  --tlc-config example/mqsim/ssdconfig-tlc.xml \
-  --output build/mqsim-run \
-  --event-limit 100
+  --ssd-config example/mqsim/ssdconfig.xml \
+  --output build/mqsim-run
 ```
 
-`--event-limit` 仅用于快速验证；去掉后会转换并执行完整 trace。输出目录包含：
+converter 的稳定契约是：
 
-- `manifest.json`：输入、时间单位、`tiers.slc`/`tiers.tlc`、stream 映射和所需容量；
-- `slc/`、`tlc/`：每个活跃 stream 的 trace、生成的 workload 和 MQSim XML 结果；
-- `summary.json`：各 flow 的请求统计和 FTL 统计。
+- 只接受 schema v4 的精确 header，并在完整转换时核对 metrics `trace.events`；
+- 只接受一个同时包含精确 `slc`/`tlc` pool 的 SSD XML；pool logical capacity 必须与 DWPDSim
+  metrics 一致，measurement window 使用同一绝对纳秒时间轴；设备必须使用 NVMe、FLASH、
+  PAGE_LEVEL mapping，关闭 preconditioning，且两个 pool 分别引用 SLC/TLC media profile；
+- 固定生成全部配置 stream：SLC flow 先于 TLC flow，空 stream 也生成空 trace；MQSim V1 的
+  NVMe queue ABI 限制总 flow 数不超过 8；
+- 保留 tier-local stream 与 pool-local LBA，不按 NodeId 或 active stream 重映射；
+- 为每个实际 command 分配全局连续 id。超过 65535 sectors 的 semantic I/O 按地址切分，
+  `commands.csv` 保存 command id 到 source sequence/chunk 的映射；
+- `DWPDSIM_DEPENDENCY_V1` 的最后一列是 `depends_on_request_ids`，使用 `-1` 或逗号分隔的多个
+  command id。converter 合并 relocation/chunk dependency 与同一 `(tier, stream, range)` 的
+  mutation/read hazard，不串行并发 READ；
+- `manifest.json` 冻结 trace/metrics/config path、SSD 内容 hash、measurement window、固定 flow
+  映射及逐 pool/flow command 和 byte totals；
+- `summary.json` 按显式 Flow_ID、Pool_ID、Channel ID 消费 MQSim result ABI v1，核对配置 hash、
+  window、容量、请求和字节数，并计算 measurement host DWPD、NAND DWPD、WAF 与最大 block
+  PE/day。零分母写 `null`。
 
-转换器将 `s`、`ms`、`us` 或 `ns` 时间戳换算为纳秒，并让每种层级从自己的首个事件
-开始计时。一个 DWPDSim stream 对应一个 MQSim flow；同一层级最多支持 8 个活跃
-stream。LBA 会按 stream 紧凑重映射，WRITE 分配地址，TRIM 释放地址，后续 WRITE 可
-复用该地址。这样生成的地址与 MQSim 对 flow 的逻辑地址分区一致，不保留通用 trace
-中的原始 `offset_bytes`。
-
-示例 SLC/TLC 配置容量较小并使用 ideal mapping table，只用于验证 pipeline，不代表
-经过校准的 SSD。替换配置时需使用 `PAGE_LEVEL` 地址映射；生成的 workload 会关闭
-device data cache，以满足当前本地 MQSim 的 TRIM 语义。Python 代码也可以直接调用
-`dwpdsim.mqsim.convert_trace` 和 `dwpdsim.mqsim.run_mqsim`。
+MQSim 的 pool `Host_Write_Bytes` 包含 Memory Dump 和 relocation destination WRITE；它与
+DWPDSim dump-only `storage.<tier>.host_write_bytes` 是两个独立口径，summary 同时保留两者。
+`--event-limit N` 只用于转换/回放前 N 条 semantic I/O 的快速检查；manifest 仍记录完整输入行数。

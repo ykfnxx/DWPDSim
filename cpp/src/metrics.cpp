@@ -1,7 +1,6 @@
 #include "dwpdsim/metrics.hpp"
 
 #include <algorithm>
-#include <cstddef>
 
 namespace dwpdsim {
 
@@ -10,11 +9,11 @@ MetricsCollector::MetricsCollector(const SimulationConfig& config) {
     io[1].stream_writes.resize(config.tlc.stream_count);
 }
 
-void MetricsCollector::record_request(Timestamp timestamp) noexcept {
-    if (!start_timestamp.has_value()) {
-        start_timestamp = timestamp;
+void MetricsCollector::record_request(TimestampNs timestamp_ns) noexcept {
+    if (!start_timestamp_ns.has_value()) {
+        start_timestamp_ns = timestamp_ns;
     }
-    end_timestamp = timestamp;
+    end_timestamp_ns = timestamp_ns;
     ++request_count;
 }
 
@@ -39,7 +38,8 @@ void MetricsCollector::record_access(AccessResult result) noexcept {
 void MetricsCollector::record_io(
     Operation operation,
     StorageTier tier,
-    std::uint32_t stream_id
+    std::uint32_t stream_id,
+    bool host_write
 ) noexcept {
     StorageTierIoCounters& counters = io[storage_tier_index(tier)];
     switch (operation) {
@@ -49,6 +49,9 @@ void MetricsCollector::record_io(
         case Operation::Write:
             ++counters.writes;
             ++counters.stream_writes[stream_id];
+            if (host_write) {
+                ++counters.host_writes;
+            }
             break;
         case Operation::Trim:
             ++counters.trims;

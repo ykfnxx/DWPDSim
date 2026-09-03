@@ -12,8 +12,8 @@ StorageTierState::StorageTierState(
     : capacity_blocks_(config.capacity_bytes / block_size_bytes),
       stream_count_(config.stream_count) {}
 
-bool StorageTierState::full() const noexcept {
-    return used_blocks_ == capacity_blocks_;
+bool StorageTierState::has_free_blocks(std::uint64_t blocks) const noexcept {
+    return blocks <= capacity_blocks_ - used_blocks_;
 }
 
 std::uint64_t StorageTierState::allocate() noexcept {
@@ -40,6 +40,10 @@ std::uint64_t StorageTierState::capacity_blocks() const noexcept {
 
 std::uint64_t StorageTierState::used_blocks() const noexcept {
     return used_blocks_;
+}
+
+std::uint64_t StorageTierState::free_blocks() const noexcept {
+    return capacity_blocks_ - used_blocks_;
 }
 
 std::uint64_t StorageTierState::peak_used_blocks() const noexcept {

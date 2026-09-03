@@ -7,34 +7,28 @@ import json
 from pathlib import Path
 
 SECONDS_PER_DAY = 86_400
-TIMESTAMP_SECONDS = {
-    "s": 1.0,
-    "seconds": 1.0,
-    "ms": 1e-3,
-    "milliseconds": 1e-3,
-    "us": 1e-6,
-    "microseconds": 1e-6,
-    "ns": 1e-9,
-    "nanoseconds": 1e-9,
-}
 
 
 def analyze(stats: dict, slc_wa: float, tlc_wa: float) -> dict:
     if slc_wa < 1 or tlc_wa < 1:
         raise ValueError("write amplification must be at least 1")
 
-    unit = stats["time"]["unit"]
-    if unit not in TIMESTAMP_SECONDS:
-        raise ValueError(f"unsupported timestamp unit: {unit}")
-
-    duration_seconds = stats["time"]["duration"] * TIMESTAMP_SECONDS[unit]
+    if stats["time"]["unit"] != "ns":
+        raise ValueError("DWPDSim vNext metrics must use nanoseconds")
+    start_ns = stats["time"]["start_ns"]
+    end_ns = stats["time"]["simulation_end_ns"]
+    if end_ns is None:
+        end_ns = stats["time"]["last_request_ns"]
+    if start_ns is None or end_ns is None:
+        raise ValueError("simulation metrics contain no request time range")
+    duration_seconds = (end_ns - start_ns) / 1_000_000_000
     if duration_seconds <= 0:
         raise ValueError("simulation duration must be positive")
 
     slc_capacity = stats["configuration"]["slc_capacity_bytes"]
     tlc_capacity = stats["configuration"]["tlc_capacity_bytes"]
-    slc_logical = stats["storage"]["slc"]["writes"]["bytes"]
-    tlc_logical = stats["storage"]["tlc"]["writes"]["bytes"]
+    slc_logical = stats["storage"]["slc"]["program_bytes"]
+    tlc_logical = stats["storage"]["tlc"]["program_bytes"]
     slc_physical = slc_logical * slc_wa
     tlc_physical = tlc_logical * tlc_wa
     days = duration_seconds / SECONDS_PER_DAY

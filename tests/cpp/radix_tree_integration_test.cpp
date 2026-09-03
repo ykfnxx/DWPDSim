@@ -41,7 +41,7 @@ int main() {
 
     std::vector<dwpdsim::NodeId> segment;
     tree.resolve_segment(leaf, segment);
-    assert((segment == std::vector<dwpdsim::NodeId>{30, 20}));
+    assert((segment == std::vector<dwpdsim::NodeId>{20, 30}));
     assert(tree.segment_top(leaf) == 20);
     assert(tree.segment_leaf_for(second) == leaf);
     assert(tree.segment_leaf_for(first) == first);
@@ -50,10 +50,10 @@ int main() {
     tree.record_access(second, 20, true);
     const dwpdsim::Node& node = tree.node(second);
     assert(node.access_count == 2);
-    assert(node.first_seen_timestamp == 10);
-    assert(node.last_access_timestamp == 20);
+    assert(node.first_seen_timestamp_ns == 10);
+    assert(node.last_access_timestamp_ns == 20);
     assert(node.has_last_hit);
-    assert(node.last_hit_timestamp == 20);
+    assert(node.last_hit_timestamp_ns == 20);
 
     assert(tree.detach_leaf(leaf) == second);
     tree.release_detached(leaf);
@@ -61,7 +61,7 @@ int main() {
     tree.release_detached(second);
     assert(!tree.contains(second));
     tree.resolve_segment(branch_leaf, segment);
-    assert((segment == std::vector<dwpdsim::NodeId>{40, 10, 0}));
+    assert((segment == std::vector<dwpdsim::NodeId>{0, 10, 40}));
 
     const auto [interloper, interloper_created] = tree.get_or_create(first, 99, 40);
     const auto [recreated, recreated_created] = tree.get_or_create(first, 20, 50);
@@ -70,7 +70,7 @@ int main() {
     assert(recreated_created);
     assert(recreated == second);
     assert(tree.node(recreated).access_count == 0);
-    assert(tree.node(recreated).first_seen_timestamp == 50);
+    assert(tree.node(recreated).first_seen_timestamp_ns == 50);
     assert(tree.size() == 6);
 
     return 0;
