@@ -1,5 +1,8 @@
 # DWPDSim 到 MQSim 的运行配置
 
+项目内部状态、完整请求流程和 Policy 介入点见 [architecture.md](architecture.md)。本文只说明运行
+配置、MQSim SSD XML 和 pipeline 产物。
+
 整条 pipeline 分为两段：DWPDSim 回放 KV cache 请求并输出逻辑 I/O，converter 再将这些
 I/O 展开成 MQSim 的多 flow workload，最后由 MQSim 计算设备层时延、写放大和磨损指标。
 
