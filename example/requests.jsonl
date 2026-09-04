@@ -1,0 +1,3 @@
+{"timestamp_ns": 0, "request_id": 1, "affinity_id": 10, "hash_ids": [1, 2, 3]}
+{"timestamp_ns": 1000000000, "request_id": 2, "affinity_id": 10, "hash_ids": [1, 2, 4]}
+{"timestamp_ns": 2000000000, "request_id": 3, "affinity_id": 20, "hash_ids": [5, 6]}

@@ -16,7 +16,9 @@ license-files = ["LICENSE"]
 authors = [
   { name = "DWPDSim contributors" },
 ]
-dependencies = []
+dependencies = [
+  "python-dotenv>=1.0",
+]
 
 [project.optional-dependencies]
 dev = [

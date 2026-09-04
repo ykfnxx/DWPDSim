@@ -149,6 +149,15 @@ Memory Dump；relocation destination WRITE 只进入 program bytes。
 
 ## MQSim pipeline
 
+完整的 workload、DWPDSim policy、SSD XML 和运行配置见
+[`docs/mqsim-pipeline.md`](docs/mqsim-pipeline.md)。
+可直接复制 dotenv 模板并运行完整示例：
+
+```bash
+cp example/.env.example example/.env
+.venv/bin/python example/run_pipeline.py
+```
+
 配套 MQSim vNext 在一次运行中回放全部 SLC/TLC flow。先编译同级 MQSim，然后运行：
 
 ```bash
