@@ -88,7 +88,7 @@ MemoryPolicy 负责：
 
 - storage hit 后是否进入内存；
 - 内存空间不足时选择最久未访问的 memory leaf segment；
-- 决定向上贪婪遇到的第一个未写盘 segment 执行 `Drop` 还是 `Dump`；
+- 决定对该 leaf segment 执行 leaf-only `Drop`，还是执行向 parent 贪婪的 `Dump`；
 - 维护内存侧候选顺序和派生状态。
 
 核心决策为：
@@ -106,9 +106,11 @@ struct MemoryEvictionDecision {
 ```
 
 memory leaf segment 与 Memory 有交集，且不存在仍与 Memory 相交的后代 segment。一次决策
-只指定起始 leaf segment；Simulator 以完整 segment 为单位向 parent segment 贪婪回收。已经
-全部写盘的 segment 只删除内存副本并继续向上；遇到第一个含未写盘 block 的 segment 时，
-对该完整 segment 执行一次 Drop/Dump 并停止。已有 storage copy 的 block 不重复写入。
+指定起始 leaf segment 和执行模式。`Drop` 只释放该 leaf segment 的内存驻留并停止；
+`Dump` 以完整 segment 为单位向 parent segment 贪婪回收，已经全部写盘的 segment 只删除
+内存副本并继续向上，遇到第一个含未写盘 block 的 segment 时写盘并停止。已有 storage copy
+的 block 不重复写入。action 是 MemoryPolicy 的逐次决策，不是 `SimulationConfig` 中的全局
+开关；当前 `baseline_lru` 固定返回 `Dump`。
 
 ### 3.2 StoragePolicy
 
@@ -249,34 +251,33 @@ Core 提供只读的 storage topology 查询，能够判断：
 Core 仍然拥有拓扑和驻留真值；Policy 的 leaf LRU 只是候选索引，使用前必须通过只读视图
 解析当前 segment。
 
-## 6. Memory Dump 边界
+## 6. Memory 回收边界
 
-### 6.1 Leaf-first segment 回收
+### 6.1 Dump 向上贪婪，Drop 只剪枝 leaf
 
-MemoryPolicy 按 segment LRU 选择 memory leaf segment。Simulator 从该 segment 开始，使用
-`parent(segment_top)` 定位 parent segment，并按以下规则向根方向处理：
+MemoryPolicy 按 segment LRU 选择 memory leaf segment，并返回本次 action：
 
 ```text
 Select oldest memory leaf segment
         |
-        v
-segment has unwritten memory block? -- no --> remove the complete memory segment
-        |                                      |
-        yes                                    v
-        |                                move to parent segment
-        v
-Dump or Drop the complete segment
+        +-- Drop --> remove the selected leaf segment --> stop
         |
-        v
-stop
+        +-- Dump --> segment has unwritten memory block?
+                         | no                         | yes
+                         v                            v
+                  remove segment and          dump missing blocks,
+                  move to parent              remove segment, stop
 ```
 
-每一步的候选、驻留交集、指标和内存删除都以 segment 为单位。对于当前 segment：
+`Drop` 不调用 `parent(segment_top)`；删除内存驻留后，只运行公共 `prune_segment()`，因此只有
+同时满足无内存、无 storage copy、无子节点的空拓扑会被递归剪掉。
+
+`Dump` 的每一步都以 segment 为单位，并使用 `parent(segment_top)` 定位 parent segment：
 
 - `memory_nodes = segment ∩ Memory`；
 - `write_nodes = {node ∈ memory_nodes | !node.on_storage}`；
 - `write_nodes` 为空时，整段释放后继续 parent segment；
-- `write_nodes` 非空时，对整段执行一次策略动作并停止；
+- `write_nodes` 非空时，对整段执行一次 Dump 并停止；
 - 到达根边界时结束，本轮可以不产生 WRITE。
 
 ### 6.2 Dump 是 storage policy 的写入输入
@@ -545,7 +546,7 @@ BaselineRatioLruStoragePolicy
 baseline 使用与其他 policy 相同的 RequestContext、DumpContext、StorageView、后台
 调度器和 commit 协议：
 
-- Memory LRU 保留 storage-hit admission 和 Drop/Dump 可配置行为；
+- Memory LRU 保留 storage-hit admission，并固定选择向 parent segment 贪婪的 Dump；
 - Fixed baseline 使用固定 tier/stream placement 和 leaf-LRU capacity reclaim；
 - Ratio baseline 使用目标 SLC write ratio、tier-local stream round-robin 和 leaf-LRU capacity
   reclaim；
@@ -796,8 +797,8 @@ Request(
 1. 仓库中不存在旧 placement/storage-eviction policy ABI；
 2. 所有 policy 都运行在同一套新接口上；
 3. 只有 Memory Dump 能触发新的 storage admission；
-4. Memory pressure 从最久未访问的 memory leaf segment 开始，以完整 segment 为单位向根
-   贪婪回收，并在第一个含未写盘 block 的 segment 停止；
+4. Memory `Drop` 只剪枝选中的 leaf segment；`Dump` 从该 leaf 开始，以完整 segment 为单位
+   向根贪婪回收，并在第一个含未写盘 block 的 segment 停止；
 5. 一个 Dump segment 只产生一次 placement；
 6. Dump 写入前按完整 bytes 获取容量，不产生 partial write；
 7. 前台 capacity eviction 与后台 idle eviction 分别运行和计数；

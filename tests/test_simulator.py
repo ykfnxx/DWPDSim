@@ -132,7 +132,7 @@ def test_dump_admission_is_atomic_and_rejection_drops_memory_segment(tmp_path):
     assert read_trace(tmp_path / "rejected.csv") == []
 
 
-def test_memory_reclaim_is_leaf_first_and_greedy_by_segment(tmp_path):
+def test_memory_dump_is_leaf_first_and_greedy_by_segment(tmp_path):
     trace_path = tmp_path / "memory-segment-reclaim.csv"
     simulator = DWPDSimulator(
         config(

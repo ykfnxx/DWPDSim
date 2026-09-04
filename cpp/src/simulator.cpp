@@ -418,7 +418,10 @@ void Simulator::evict_from_memory(const AccessContext& context) {
             *endpoint,
             memory_segment_scratch_,
         };
-        const std::optional<NodeId> parent_segment = tree_.parent(segment.segment_top);
+        const std::optional<NodeId> parent_segment =
+            decision.action == MemoryEvictionAction::Dump
+                ? tree_.parent(segment.segment_top)
+                : std::nullopt;
 
         memory_nodes.clear();
         write_nodes.clear();
@@ -436,23 +439,26 @@ void Simulator::evict_from_memory(const AccessContext& context) {
         }
 
         if (memory_nodes.empty()) {
+            if (decision.action == MemoryEvictionAction::Drop) {
+                return;
+            }
             endpoint = parent_segment;
             continue;
         }
 
         ++metrics_.memory_evicted_segments;
         metrics_.memory_evicted_blocks += memory_nodes.size();
-        const bool stop_after_segment = !write_nodes.empty();
-        if (decision.action == MemoryEvictionAction::Dump && stop_after_segment) {
+        const bool has_unwritten_blocks = !write_nodes.empty();
+        if (decision.action == MemoryEvictionAction::Drop) {
+            ++metrics_.memory_drop_segments;
+            metrics_.memory_drop_blocks += memory_nodes.size();
+        } else if (has_unwritten_blocks) {
             ++metrics_.memory_dump_segments;
             metrics_.memory_dump_blocks += write_nodes.size();
             if (!dump_segment(context, segment, write_nodes)) {
                 ++metrics_.memory_drop_segments;
-                metrics_.memory_drop_blocks += write_nodes.size();
+                metrics_.memory_drop_blocks += memory_nodes.size();
             }
-        } else if (decision.action == MemoryEvictionAction::Drop && stop_after_segment) {
-            ++metrics_.memory_drop_segments;
-            metrics_.memory_drop_blocks += write_nodes.size();
         }
 
         for (NodeId node_id : memory_nodes) {
@@ -465,7 +471,7 @@ void Simulator::evict_from_memory(const AccessContext& context) {
             );
         }
         prune_segment(segment.ordered_nodes);
-        if (stop_after_segment) {
+        if (decision.action == MemoryEvictionAction::Drop || has_unwritten_blocks) {
             return;
         }
         endpoint = parent_segment;

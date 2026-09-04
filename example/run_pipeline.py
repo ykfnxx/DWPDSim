@@ -82,7 +82,6 @@ def simulation_config() -> SimulationConfig:
         memory_policy=MemoryPolicyConfig(
             kind=required("DWPDSIM_MEMORY_POLICY"),
             admit_storage_hits=boolean("DWPDSIM_ADMIT_STORAGE_HITS"),
-            eviction_action=required("DWPDSIM_MEMORY_EVICTION_ACTION"),
         ),
         storage_policy=StoragePolicyConfig(
             kind=required("DWPDSIM_STORAGE_POLICY"),

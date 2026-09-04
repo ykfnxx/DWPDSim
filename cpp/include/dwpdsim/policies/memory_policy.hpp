@@ -9,8 +9,8 @@ namespace dwpdsim {
 class RadixTree;
 
 struct MemoryEvictionDecision {
-    NodeId leaf_segment_endpoint = 0;
-    MemoryEvictionAction action = MemoryEvictionAction::Dump;
+    NodeId leaf_segment_endpoint;
+    MemoryEvictionAction action;
 };
 
 enum class MemoryMutationKind : std::uint8_t {

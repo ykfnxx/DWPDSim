@@ -13,9 +13,9 @@ placement、淘汰与迁移。C++17 core 是逻辑状态、pool-local 地址、�
 - memory hit 不产生 I/O；
 - storage hit 产生 READ，MemoryPolicy 决定是否提升到内存；
 - global miss 代表计算出新 block，并加入内存，不产生 READ；
-- 内存按 segment LRU 选择 leaf segment，再以完整 segment 为单位向 parent segment 贪婪回收；
-  已全部写盘的 segment 释放内存副本后继续向上，遇到第一个含未写盘 block 的 segment 时执行
-  一次 `Dump` 或 `Drop` 并停止；
+- 内存按 segment LRU 选择 leaf segment；`Drop` 只剪枝该 leaf segment，`Dump` 才以 segment
+  为单位向 parent 贪婪，已写盘 segment 释放内存后继续向上，在首个含未写盘 block 的 segment
+  写盘并停止；
 - StoragePolicy 统一决定 Dump placement、同步 capacity reclaim、access migration 和后台维护；
 - relocation 是管理意图，不是设备 opcode。Simulator 将每个 block 展开为
   `READ(source) -> WRITE(destination) -> TRIM(source)`；access migration 复用本次 storage-hit
@@ -100,8 +100,8 @@ simulator.process_batch(
 
 顶层接口只有 `MemoryPolicy` 和 `StoragePolicy`：
 
-- `baseline_lru`：memory admission、leaf-first segment LRU 和向 parent segment 的贪婪回收，
-  首个含未写盘 block 的 segment 可配置为 `dump` 或 `drop`；
+- `baseline_lru`：memory admission、leaf-first segment LRU，并返回向 parent segment 贪婪的
+  `Dump`；
 - `baseline_fixed_lru`：固定 tier/stream placement，leaf-LRU capacity reclaim；
 - `baseline_ratio_lru`：按 SLC write ratio placement，pool 内 round-robin stream；
 - `wear_share_round_robin`：wear-share tier placement 与 pool 内 round-robin stream；

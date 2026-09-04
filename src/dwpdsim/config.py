@@ -26,7 +26,6 @@ class MemoryPolicyConfig:
 
     kind: str = "baseline_lru"
     admit_storage_hits: bool = True
-    eviction_action: str = "dump"
 
 
 @dataclass(frozen=True, slots=True)

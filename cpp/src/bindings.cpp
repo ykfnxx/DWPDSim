@@ -47,16 +47,6 @@ StorageTier parse_storage_tier(const std::string& value) {
     throw py::value_error("fixed_tier must be 'slc' or 'tlc'");
 }
 
-MemoryEvictionAction parse_memory_action(const std::string& value) {
-    if (value == "drop") {
-        return MemoryEvictionAction::Drop;
-    }
-    if (value == "dump") {
-        return MemoryEvictionAction::Dump;
-    }
-    throw py::value_error("memory eviction action must be 'drop' or 'dump'");
-}
-
 std::unique_ptr<StoragePolicy> make_storage_policy(
     const std::string& kind,
     const SimulationConfig& simulation,
@@ -334,7 +324,6 @@ PYBIND11_MODULE(_core, module) {
                          const std::string& trace_path,
                          const std::string& memory_policy,
                          bool admit_storage_hits,
-                         const std::string& memory_eviction_action,
                          const std::string& storage_policy,
                          const std::string& fixed_tier,
                          std::uint32_t fixed_stream_id,
@@ -364,8 +353,7 @@ PYBIND11_MODULE(_core, module) {
                     throw py::value_error("erase budgets must be positive");
                 }
                 auto memory = std::make_unique<BaselineMemoryLruPolicy>(
-                    admit_storage_hits,
-                    parse_memory_action(memory_eviction_action)
+                    admit_storage_hits
                 );
                 const WearShareRoundRobinPolicyConfig round_robin{
                     slc_host_share,
@@ -408,7 +396,6 @@ PYBIND11_MODULE(_core, module) {
             py::arg("trace_path"),
             py::arg("memory_policy"),
             py::arg("admit_storage_hits"),
-            py::arg("memory_eviction_action"),
             py::arg("storage_policy"),
             py::arg("fixed_tier"),
             py::arg("fixed_stream_id"),

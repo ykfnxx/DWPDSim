@@ -17,7 +17,6 @@ namespace {
 using dwpdsim::AffinityId;
 using dwpdsim::HashId;
 using dwpdsim::MemoryConfig;
-using dwpdsim::MemoryEvictionAction;
 using dwpdsim::RequestId;
 using dwpdsim::SimulationConfig;
 using dwpdsim::StorageTier;
@@ -62,15 +61,76 @@ void process(
     simulator.process_request(timestamp_ns, request_id, affinity_id, hashes);
 }
 
+class ScriptedMemoryPolicy final : public dwpdsim::MemoryPolicy {
+  public:
+    explicit ScriptedMemoryPolicy(std::vector<dwpdsim::MemoryEvictionDecision> decisions)
+        : decisions_(std::move(decisions)) {}
+
+    bool admit_storage_hit(
+        const dwpdsim::AccessContext&,
+        const dwpdsim::Node&,
+        const dwpdsim::RadixTree&
+    ) const override {
+        return true;
+    }
+
+    dwpdsim::MemoryEvictionDecision evict(
+        const dwpdsim::RequestContext&,
+        const dwpdsim::RadixTree&
+    ) const override {
+        assert(next_decision_ < decisions_.size());
+        return decisions_[next_decision_++];
+    }
+
+    void on_commit(const dwpdsim::MemoryMutation&) override {}
+
+  private:
+    std::vector<dwpdsim::MemoryEvictionDecision> decisions_;
+    mutable std::size_t next_decision_ = 0;
+};
+
+void drop_prunes_only_the_selected_leaf_segment() {
+    const auto trace = std::filesystem::temp_directory_path() /
+                       "dwpdsim-memory-policy-drop.csv";
+    dwpdsim::Simulator simulator(
+        config(3, 8, 4),
+        std::make_unique<ScriptedMemoryPolicy>(
+            std::vector<dwpdsim::MemoryEvictionDecision>{
+                {2, dwpdsim::MemoryEvictionAction::Dump},
+                {3, dwpdsim::MemoryEvictionAction::Dump},
+                {2, dwpdsim::MemoryEvictionAction::Drop},
+            }
+        ),
+        std::make_unique<dwpdsim::BaselineFixedLruStoragePolicy>(
+            dwpdsim::Placement{StorageTier::Slc, 0}
+        ),
+        trace
+    );
+
+    process(simulator, 0, 1, {1, 2});
+    process(simulator, 1, 2, {1, 3});
+    process(simulator, 2, 3, {4});
+    process(simulator, 3, 4, {1, 2});
+    process(simulator, 4, 5, {5});
+    simulator.finish();
+
+    const auto& metrics = simulator.metrics();
+    assert(metrics.memory_drop_segments == 1);
+    assert(metrics.memory_drop_blocks == 1);
+    assert(metrics.dump_requests == 2);
+    assert(metrics.io[0].writes == 2);
+    assert(simulator.tree().node(1).in_memory);
+    assert(!simulator.tree().node(2).in_memory);
+    assert(simulator.tree().node(2).on_storage);
+    std::filesystem::remove(trace);
+}
+
 void dump_is_one_atomic_segment_admission() {
     const auto trace = std::filesystem::temp_directory_path() /
                        "dwpdsim-vnext-atomic-dump.csv";
     dwpdsim::Simulator simulator(
         config(2, 1, 4),
-        std::make_unique<dwpdsim::BaselineMemoryLruPolicy>(
-            true,
-            MemoryEvictionAction::Dump
-        ),
+        std::make_unique<dwpdsim::BaselineMemoryLruPolicy>(true),
         std::make_unique<dwpdsim::BaselineFixedLruStoragePolicy>(
             dwpdsim::Placement{StorageTier::Slc, 1}
         ),
@@ -93,15 +153,12 @@ void dump_is_one_atomic_segment_admission() {
     std::filesystem::remove(trace);
 }
 
-void memory_reclaim_is_leaf_first_and_greedy_by_segment() {
+void dump_reclaim_is_leaf_first_and_greedy_by_segment() {
     const auto trace = std::filesystem::temp_directory_path() /
                        "dwpdsim-memory-segment-reclaim.csv";
     dwpdsim::Simulator simulator(
         config(3, 16, 4),
-        std::make_unique<dwpdsim::BaselineMemoryLruPolicy>(
-            true,
-            MemoryEvictionAction::Dump
-        ),
+        std::make_unique<dwpdsim::BaselineMemoryLruPolicy>(true),
         std::make_unique<dwpdsim::BaselineFixedLruStoragePolicy>(
             dwpdsim::Placement{StorageTier::Slc, 1}
         ),
@@ -171,10 +228,7 @@ void baseline_dump_and_storage_hit_use_new_interfaces() {
                        "dwpdsim-vnext-baseline.csv";
     dwpdsim::Simulator simulator(
         config(1, 4, 4),
-        std::make_unique<dwpdsim::BaselineMemoryLruPolicy>(
-            true,
-            MemoryEvictionAction::Dump
-        ),
+        std::make_unique<dwpdsim::BaselineMemoryLruPolicy>(true),
         std::make_unique<dwpdsim::BaselineFixedLruStoragePolicy>(
             dwpdsim::Placement{StorageTier::Slc, 1}
         ),
@@ -215,10 +269,7 @@ void background_relocation_emits_explicit_read_write_trim_chain() {
                        "dwpdsim-vnext-background.csv";
     dwpdsim::Simulator simulator(
         config(1, 4, 4, kSecond),
-        std::make_unique<dwpdsim::BaselineMemoryLruPolicy>(
-            true,
-            MemoryEvictionAction::Dump
-        ),
+        std::make_unique<dwpdsim::BaselineMemoryLruPolicy>(true),
         std::make_unique<dwpdsim::AdaptiveEnduranceStoragePolicy>(
             adaptive_endurance_config(kSecond)
         ),
@@ -254,10 +305,7 @@ void access_relocation_reuses_storage_hit_read() {
                        "dwpdsim-vnext-access.csv";
     dwpdsim::Simulator simulator(
         config(1, 4, 8),
-        std::make_unique<dwpdsim::BaselineMemoryLruPolicy>(
-            true,
-            MemoryEvictionAction::Dump
-        ),
+        std::make_unique<dwpdsim::BaselineMemoryLruPolicy>(true),
         std::make_unique<dwpdsim::AdaptiveEnduranceStoragePolicy>(
             adaptive_endurance_config(0)
         ),
@@ -338,8 +386,9 @@ void configuration_rejects_more_than_eight_total_streams() {
 }  // namespace
 
 int main() {
+    drop_prunes_only_the_selected_leaf_segment();
     dump_is_one_atomic_segment_admission();
-    memory_reclaim_is_leaf_first_and_greedy_by_segment();
+    dump_reclaim_is_leaf_first_and_greedy_by_segment();
     memory_lru_tracks_segment_accesses();
     baseline_dump_and_storage_hit_use_new_interfaces();
     background_relocation_emits_explicit_read_write_trim_chain();

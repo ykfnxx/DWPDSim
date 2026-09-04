@@ -50,7 +50,6 @@ class DWPDSimulator:
             str(self.trace_path),
             memory_policy=memory.kind,
             admit_storage_hits=memory.admit_storage_hits,
-            memory_eviction_action=memory.eviction_action,
             storage_policy=storage.kind,
             fixed_tier=storage.fixed_tier,
             fixed_stream_id=storage.fixed_stream_id,

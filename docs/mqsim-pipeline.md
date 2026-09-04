@@ -84,7 +84,6 @@ config = SimulationConfig(
     memory_policy=MemoryPolicyConfig(
         kind="baseline_lru",
         admit_storage_hits=True,
-        eviction_action="dump",
     ),
     storage_policy=StoragePolicyConfig(
         kind="baseline_fixed_lru",
@@ -123,10 +122,11 @@ config = SimulationConfig(
 | 参数 | 默认值 | 含义 |
 | --- | --- | --- |
 | `admit_storage_hits` | `True` | storage hit 后是否将 block 提升到内存 |
-| `eviction_action` | `"dump"` | 首个含未写盘 block 的贪婪 segment 执行 `dump` 或 `drop` |
 
-要生成完整的持久化 storage workload，应使用 `eviction_action="dump"`。`drop` 会直接丢弃未写盘
-block，因此可能减少甚至不产生对应的 storage WRITE。
+`Dump`/`Drop` 是每次 `MemoryPolicy::evict()` 返回的决策，不是独立配置项。当前
+`baseline_lru` 总是返回 `Dump`：Simulator 从选中的 leaf segment 开始向 parent segment
+贪婪回收，在首个含未写盘 block 的 segment 进入 StoragePolicy placement 并产生 WRITE。
+返回 `Drop` 的 memory policy 只剪枝它选中的 leaf segment，不继续处理 parent segment。
 
 ### Storage policy
 
@@ -295,7 +295,7 @@ capacity 与上述 SLC/TLC 容量精确匹配，并同步设计能够容纳该�
 - block size、memory/SLC/TLC capacity 是整数 block；
 - block size 和 storage capacity 按 512 byte 对齐；
 - SLC/TLC stream 总数不超过 8；
-- memory eviction 使用了实验需要的 `dump` 或 `drop` 语义；
+- memory policy 的 `Dump`/`Drop` 决策符合实验语义；
 - adaptive 实验设置了需要的 `simulation_end_ns`；
 - trace 和 metrics 来自同一次完成的模拟；
 - XML pool logical capacity 精确匹配 DWPDSim 配置；

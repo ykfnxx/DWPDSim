@@ -6,11 +6,8 @@
 
 namespace dwpdsim {
 
-BaselineMemoryLruPolicy::BaselineMemoryLruPolicy(
-    bool admit_storage_hits,
-    MemoryEvictionAction eviction_action
-)
-    : admit_storage_hits_(admit_storage_hits), eviction_action_(eviction_action) {}
+BaselineMemoryLruPolicy::BaselineMemoryLruPolicy(bool admit_storage_hits)
+    : admit_storage_hits_(admit_storage_hits) {}
 
 bool BaselineMemoryLruPolicy::admit_storage_hit(
     const AccessContext&,
@@ -39,7 +36,7 @@ MemoryEvictionDecision BaselineMemoryLruPolicy::evict(
     }
     return MemoryEvictionDecision{
         *victim,
-        eviction_action_,
+        MemoryEvictionAction::Dump,
     };
 }
 
