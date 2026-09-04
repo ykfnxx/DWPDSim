@@ -87,8 +87,8 @@ class StoragePolicy;
 MemoryPolicy 负责：
 
 - storage hit 后是否进入内存；
-- 内存空间不足时选择 Radix segment victim；
-- 决定该 segment 离开内存时执行 `Drop` 还是 `Dump`；
+- 内存空间不足时选择最久未访问的 memory leaf segment；
+- 决定向上贪婪遇到的第一个未写盘 segment 执行 `Drop` 还是 `Dump`；
 - 维护内存侧候选顺序和派生状态。
 
 核心决策为：
@@ -100,13 +100,15 @@ enum class MemoryEvictionAction {
 };
 
 struct MemoryEvictionDecision {
-    NodeId segment_endpoint;
+    NodeId leaf_segment_endpoint;
     MemoryEvictionAction action;
 };
 ```
 
-同一个 memory segment 只产生一次 Drop/Dump 决策。已有 storage copy 的 block 无需重复
-写入；它们只删除内存副本。
+memory leaf segment 与 Memory 有交集，且不存在仍与 Memory 相交的后代 segment。一次决策
+只指定起始 leaf segment；Simulator 以完整 segment 为单位向 parent segment 贪婪回收。已经
+全部写盘的 segment 只删除内存副本并继续向上；遇到第一个含未写盘 block 的 segment 时，
+对该完整 segment 执行一次 Drop/Dump 并停止。已有 storage copy 的 block 不重复写入。
 
 ### 3.2 StoragePolicy
 
@@ -249,7 +251,35 @@ Core 仍然拥有拓扑和驻留真值；Policy 的 leaf LRU 只是候选索引�
 
 ## 6. Memory Dump 边界
 
-### 6.1 Dump 是 storage policy 的写入输入
+### 6.1 Leaf-first segment 回收
+
+MemoryPolicy 按 segment LRU 选择 memory leaf segment。Simulator 从该 segment 开始，使用
+`parent(segment_top)` 定位 parent segment，并按以下规则向根方向处理：
+
+```text
+Select oldest memory leaf segment
+        |
+        v
+segment has unwritten memory block? -- no --> remove the complete memory segment
+        |                                      |
+        yes                                    v
+        |                                move to parent segment
+        v
+Dump or Drop the complete segment
+        |
+        v
+stop
+```
+
+每一步的候选、驻留交集、指标和内存删除都以 segment 为单位。对于当前 segment：
+
+- `memory_nodes = segment ∩ Memory`；
+- `write_nodes = {node ∈ memory_nodes | !node.on_storage}`；
+- `write_nodes` 为空时，整段释放后继续 parent segment；
+- `write_nodes` 非空时，对整段执行一次策略动作并停止；
+- 到达根边界时结束，本轮可以不产生 WRITE。
+
+### 6.2 Dump 是 storage policy 的写入输入
 
 Global miss 只把新 block 放入内存，不直接调用 storage placement。只有 MemoryPolicy 在
 内存淘汰时返回 `Dump`，才构造 storage policy 输入。
@@ -270,7 +300,7 @@ struct DumpContext {
 
 已有 SLC/TLC copy 的节点不进入 `write_nodes`，也不产生重复 WRITE。
 
-### 6.2 Dump placement
+### 6.3 Dump placement
 
 StoragePolicy 对完整 DumpContext 做 placement。每个 policy 对一个 Dump segment 只做
 一次 tier/stream 决策，`write_nodes` 共享该 placement。baseline policy 在新接口上重实现
@@ -295,7 +325,7 @@ Select and commit one capacity victim
 容量淘汰保留，但本次 Dump 不产生任何 WRITE。随后 MemoryPolicy 选中的节点仍需离开内存，
 没有其他副本的节点成为 drop，并记录独立的 rejection/drop 指标。
 
-### 6.3 Protected nodes
+### 6.4 Protected nodes
 
 当前请求正在使用的已命中前缀在 request scope 内受到保护。前台 capacity reclaim 不得选择
 与 protected prefix 相交的 segment；正在迁移或写入的 source/incoming segment 也作为临时
@@ -766,20 +796,22 @@ Request(
 1. 仓库中不存在旧 placement/storage-eviction policy ABI；
 2. 所有 policy 都运行在同一套新接口上；
 3. 只有 Memory Dump 能触发新的 storage admission；
-4. 一个 Dump segment 只产生一次 placement；
-5. Dump 写入前按完整 bytes 获取容量，不产生 partial write；
-6. 前台 capacity eviction 与后台 idle eviction 分别运行和计数；
-7. 无前台请求的时间区间仍按周期执行后台 tick；
-8. 同时间 tick 先于当前 request 更新 adaptive-endurance gap；
-9. 后台 migration 能独立触发 TLC capacity reclaim；
-10. 当前请求的 protected prefix 不会被前台回收；
-11. Policy 不修改或复制 RadixTree、StorageState 和 LBA 状态；
-12. program bytes 只在实际 WRITE commit 后增加；
-13. batch 与逐 request 输入产生完全一致的逻辑结果；
-14. 相同输入、配置和 simulation end 得到确定一致的 trace 与 metrics；
-15. 后台 relocation 生成 READ、WRITE、TRIM，access-triggered relocation 复用已有 source
+4. Memory pressure 从最久未访问的 memory leaf segment 开始，以完整 segment 为单位向根
+   贪婪回收，并在第一个含未写盘 block 的 segment 停止；
+5. 一个 Dump segment 只产生一次 placement；
+6. Dump 写入前按完整 bytes 获取容量，不产生 partial write；
+7. 前台 capacity eviction 与后台 idle eviction 分别运行和计数；
+8. 无前台请求的时间区间仍按周期执行后台 tick；
+9. 同时间 tick 先于当前 request 更新 adaptive-endurance gap；
+10. 后台 migration 能独立触发 TLC capacity reclaim；
+11. 当前请求的 protected prefix 不会被前台回收；
+12. Policy 不修改或复制 RadixTree、StorageState 和 LBA 状态；
+13. program bytes 只在实际 WRITE commit 后增加；
+14. batch 与逐 request 输入产生完全一致的逻辑结果；
+15. 相同输入、配置和 simulation end 得到确定一致的 trace 与 metrics；
+16. 后台 relocation 生成 READ、WRITE、TRIM，access-triggered relocation 复用已有 source
     READ；
-16. relocation 的三条 I/O 共享 `move_id`；trace 记录 READ → WRITE → TRIM 依赖链，只有
+17. relocation 的三条 I/O 共享 `move_id`；trace 记录 READ → WRITE → TRIM 依赖链，只有
     dependency-aware replay 才能宣称兑现 completion 依赖；
-17. DWPDSim 和 MQSim 的 operation 集合中不存在 `MIGRATE` opcode；
-18. 最终链路只包含 DWPDSim，不包含算法参考的运行时组件。
+18. DWPDSim 和 MQSim 的 operation 集合中不存在 `MIGRATE` opcode；
+19. 最终链路只包含 DWPDSim，不包含算法参考的运行时组件。

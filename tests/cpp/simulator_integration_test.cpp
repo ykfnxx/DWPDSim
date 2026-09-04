@@ -93,6 +93,79 @@ void dump_is_one_atomic_segment_admission() {
     std::filesystem::remove(trace);
 }
 
+void memory_reclaim_is_leaf_first_and_greedy_by_segment() {
+    const auto trace = std::filesystem::temp_directory_path() /
+                       "dwpdsim-memory-segment-reclaim.csv";
+    dwpdsim::Simulator simulator(
+        config(3, 16, 4),
+        std::make_unique<dwpdsim::BaselineMemoryLruPolicy>(
+            true,
+            MemoryEvictionAction::Dump
+        ),
+        std::make_unique<dwpdsim::BaselineFixedLruStoragePolicy>(
+            dwpdsim::Placement{StorageTier::Slc, 1}
+        ),
+        trace
+    );
+
+    process(simulator, 0, 1, {1, 2, 4});
+    process(simulator, 1, 2, {1, 3});
+    process(simulator, 2, 3, {1, 2, 4});
+    process(simulator, 3, 4, {5});
+    simulator.finish();
+
+    const auto& metrics = simulator.metrics();
+    assert(metrics.memory_evicted_segments == 4);
+    assert(metrics.memory_evicted_blocks == 6);
+    assert(metrics.memory_evictions_with_storage_copy == 2);
+    assert(metrics.memory_dump_segments == 3);
+    assert(metrics.memory_dump_blocks == 4);
+    assert(metrics.dump_requests == 3);
+    assert(metrics.io[0].writes == 4);
+    assert(metrics.io[0].reads == 2);
+    assert(!simulator.tree().node(1).in_memory);
+    assert(simulator.tree().node(1).on_storage);
+    assert(!simulator.tree().node(2).in_memory);
+    assert(simulator.tree().node(2).on_storage);
+    assert(!simulator.tree().node(4).in_memory);
+    assert(simulator.tree().node(4).on_storage);
+    assert(simulator.tree().node(5).in_memory);
+
+    const auto lines = read_lines(trace);
+    assert(lines.size() == 7);
+    assert(lines.back().find(",1,1,MEMORY_DUMP,,") != std::string::npos);
+    std::filesystem::remove(trace);
+}
+
+void memory_lru_tracks_segment_accesses() {
+    const auto trace = std::filesystem::temp_directory_path() /
+                       "dwpdsim-memory-segment-lru.csv";
+    dwpdsim::Simulator simulator(
+        config(3, 8, 4),
+        std::make_unique<dwpdsim::BaselineMemoryLruPolicy>(),
+        std::make_unique<dwpdsim::BaselineFixedLruStoragePolicy>(
+            dwpdsim::Placement{StorageTier::Slc, 0}
+        ),
+        trace
+    );
+
+    process(simulator, 0, 1, {1, 2});
+    process(simulator, 1, 2, {3});
+    process(simulator, 2, 3, {1});
+    process(simulator, 3, 4, {4});
+    simulator.finish();
+
+    assert(simulator.tree().node(1).in_memory);
+    assert(simulator.tree().node(2).in_memory);
+    assert(!simulator.tree().node(3).in_memory);
+    assert(simulator.tree().node(3).on_storage);
+    assert(simulator.tree().node(4).in_memory);
+    const auto lines = read_lines(trace);
+    assert(lines.size() == 2);
+    assert(lines.back().find(",3,3,MEMORY_DUMP,,") != std::string::npos);
+    std::filesystem::remove(trace);
+}
+
 void baseline_dump_and_storage_hit_use_new_interfaces() {
     const auto trace = std::filesystem::temp_directory_path() /
                        "dwpdsim-vnext-baseline.csv";
@@ -266,6 +339,8 @@ void configuration_rejects_more_than_eight_total_streams() {
 
 int main() {
     dump_is_one_atomic_segment_admission();
+    memory_reclaim_is_leaf_first_and_greedy_by_segment();
+    memory_lru_tracks_segment_accesses();
     baseline_dump_and_storage_hit_use_new_interfaces();
     background_relocation_emits_explicit_read_write_trim_chain();
     access_relocation_reuses_storage_hit_read();

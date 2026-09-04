@@ -9,7 +9,7 @@ namespace dwpdsim {
 class RadixTree;
 
 struct MemoryEvictionDecision {
-    NodeId segment_endpoint = 0;
+    NodeId leaf_segment_endpoint = 0;
     MemoryEvictionAction action = MemoryEvictionAction::Dump;
 };
 

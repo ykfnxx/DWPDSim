@@ -132,6 +132,54 @@ def test_dump_admission_is_atomic_and_rejection_drops_memory_segment(tmp_path):
     assert read_trace(tmp_path / "rejected.csv") == []
 
 
+def test_memory_reclaim_is_leaf_first_and_greedy_by_segment(tmp_path):
+    trace_path = tmp_path / "memory-segment-reclaim.csv"
+    simulator = DWPDSimulator(
+        config(
+            memory_blocks=3,
+            slc_blocks=16,
+            storage_policy=StoragePolicyConfig(
+                kind="baseline_fixed_lru",
+                fixed_tier="slc",
+                fixed_stream_id=1,
+            ),
+        ),
+        trace_path,
+    )
+    simulator.run(
+        [
+            Request(0, 1, 1, [1, 2, 4]),
+            Request(1, 2, 1, [1, 3]),
+            Request(2, 3, 1, [1, 2, 4]),
+            Request(3, 4, 1, [5]),
+        ]
+    )
+    simulator.finish()
+
+    stats = simulator.stats()
+    assert stats["memory"]["evicted_segments"] == 4
+    assert stats["memory"]["evicted_blocks"] == 6
+    assert stats["memory"]["evictions_with_storage_copy"] == 2
+    assert stats["memory"]["dump_segments"] == 3
+    assert stats["memory"]["dump_blocks"] == 4
+    assert stats["dumps"]["requests"] == 3
+    rows = read_trace(trace_path)
+    assert [row["operation"] for row in rows] == [
+        "WRITE",
+        "WRITE",
+        "READ",
+        "READ",
+        "WRITE",
+        "WRITE",
+    ]
+    assert [row["node_id"] for row in rows if row["operation"] == "WRITE"] == [
+        "2",
+        "4",
+        "3",
+        "1",
+    ]
+
+
 def test_baseline_slc_capacity_reclaim_relocates_before_reusing_space(tmp_path):
     trace_path = tmp_path / "capacity-relocation.csv"
     simulator = DWPDSimulator(

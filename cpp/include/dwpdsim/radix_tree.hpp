@@ -36,6 +36,7 @@ class RadixTree {
     void resolve_segment(NodeId endpoint, std::vector<NodeId>& segment) const;
     NodeId segment_leaf_for(NodeId node_id) const noexcept;
     void children(NodeId node_id, std::vector<NodeId>& output) const;
+    bool has_memory_descendant(NodeId node_id) const;
     bool has_storage_descendant(NodeId node_id) const;
 
     void record_access(NodeId node_id, TimestampNs timestamp_ns, bool hit) noexcept;

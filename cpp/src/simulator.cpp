@@ -408,50 +408,68 @@ void Simulator::insert_into_memory(NodeId node_id, const AccessContext& context)
 
 void Simulator::evict_from_memory(const AccessContext& context) {
     const MemoryEvictionDecision decision = memory_policy_->evict(context.request, tree_);
-    tree_.resolve_segment(decision.segment_endpoint, memory_segment_scratch_);
-    const SegmentView segment{
-        tree_.segment_top(decision.segment_endpoint),
-        decision.segment_endpoint,
-        memory_segment_scratch_,
-    };
-
     std::vector<NodeId> memory_nodes;
     std::vector<NodeId> write_nodes;
-    for (NodeId node_id : segment.ordered_nodes) {
-        const Node& node = tree_.node(node_id);
-        if (!node.in_memory) {
+    std::optional<NodeId> endpoint = decision.leaf_segment_endpoint;
+    while (endpoint.has_value()) {
+        tree_.resolve_segment(*endpoint, memory_segment_scratch_);
+        const SegmentView segment{
+            tree_.segment_top(*endpoint),
+            *endpoint,
+            memory_segment_scratch_,
+        };
+        const std::optional<NodeId> parent_segment = tree_.parent(segment.segment_top);
+
+        memory_nodes.clear();
+        write_nodes.clear();
+        for (NodeId node_id : segment.ordered_nodes) {
+            const Node& node = tree_.node(node_id);
+            if (!node.in_memory) {
+                continue;
+            }
+            memory_nodes.push_back(node_id);
+            if (!node.on_storage) {
+                write_nodes.push_back(node_id);
+            } else {
+                ++metrics_.memory_evictions_with_storage_copy;
+            }
+        }
+
+        if (memory_nodes.empty()) {
+            endpoint = parent_segment;
             continue;
         }
-        memory_nodes.push_back(node_id);
-        if (!node.on_storage) {
-            write_nodes.push_back(node_id);
-        } else {
-            ++metrics_.memory_evictions_with_storage_copy;
-        }
-    }
 
-    ++metrics_.memory_evicted_segments;
-    metrics_.memory_evicted_blocks += memory_nodes.size();
-    if (decision.action == MemoryEvictionAction::Dump && !write_nodes.empty()) {
-        ++metrics_.memory_dump_segments;
-        metrics_.memory_dump_blocks += write_nodes.size();
-        if (!dump_segment(context, segment, write_nodes)) {
+        ++metrics_.memory_evicted_segments;
+        metrics_.memory_evicted_blocks += memory_nodes.size();
+        const bool stop_after_segment = !write_nodes.empty();
+        if (decision.action == MemoryEvictionAction::Dump && stop_after_segment) {
+            ++metrics_.memory_dump_segments;
+            metrics_.memory_dump_blocks += write_nodes.size();
+            if (!dump_segment(context, segment, write_nodes)) {
+                ++metrics_.memory_drop_segments;
+                metrics_.memory_drop_blocks += write_nodes.size();
+            }
+        } else if (decision.action == MemoryEvictionAction::Drop && stop_after_segment) {
             ++metrics_.memory_drop_segments;
             metrics_.memory_drop_blocks += write_nodes.size();
         }
-    } else if (decision.action == MemoryEvictionAction::Drop && !write_nodes.empty()) {
-        ++metrics_.memory_drop_segments;
-        metrics_.memory_drop_blocks += write_nodes.size();
-    }
 
-    for (NodeId node_id : memory_nodes) {
-        Node& victim = tree_.node(node_id);
-        metrics_.memory_removed(victim.on_storage);
-        victim.in_memory = false;
-        --memory_used_blocks_;
-        memory_policy_->on_commit(MemoryMutation{MemoryMutationKind::Removed, node_id});
+        for (NodeId node_id : memory_nodes) {
+            Node& victim = tree_.node(node_id);
+            metrics_.memory_removed(victim.on_storage);
+            victim.in_memory = false;
+            --memory_used_blocks_;
+            memory_policy_->on_commit(
+                MemoryMutation{MemoryMutationKind::Removed, node_id}
+            );
+        }
+        prune_segment(segment.ordered_nodes);
+        if (stop_after_segment) {
+            return;
+        }
+        endpoint = parent_segment;
     }
-    prune_segment(segment.ordered_nodes);
 }
 
 bool Simulator::dump_segment(

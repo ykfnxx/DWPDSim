@@ -151,6 +151,28 @@ void RadixTree::children(NodeId node_id, std::vector<NodeId>& output) const {
     std::sort(output.begin(), output.end());
 }
 
+bool RadixTree::has_memory_descendant(NodeId node_id) const {
+    std::vector<NodeSlot> pending;
+    NodeSlot child = nodes_[slot(node_id)].first_child;
+    while (child != kInvalidNodeSlot) {
+        pending.push_back(child);
+        child = nodes_[child].next_sibling;
+    }
+    while (!pending.empty()) {
+        const NodeSlot current = pending.back();
+        pending.pop_back();
+        if (nodes_[current].node.in_memory) {
+            return true;
+        }
+        child = nodes_[current].first_child;
+        while (child != kInvalidNodeSlot) {
+            pending.push_back(child);
+            child = nodes_[child].next_sibling;
+        }
+    }
+    return false;
+}
+
 bool RadixTree::has_storage_descendant(NodeId node_id) const {
     std::vector<NodeSlot> pending;
     NodeSlot child = nodes_[slot(node_id)].first_child;

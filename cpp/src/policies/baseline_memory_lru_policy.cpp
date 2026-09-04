@@ -2,6 +2,8 @@
 
 #include "dwpdsim/radix_tree.hpp"
 
+#include <unordered_set>
+
 namespace dwpdsim {
 
 BaselineMemoryLruPolicy::BaselineMemoryLruPolicy(
@@ -22,8 +24,21 @@ MemoryEvictionDecision BaselineMemoryLruPolicy::evict(
     const RequestContext&,
     const RadixTree& tree
 ) const {
+    std::unordered_set<NodeId> seen_segments;
+    std::optional<NodeId> victim;
+    std::optional<NodeId> current = head_;
+    while (current.has_value()) {
+        const NodeId endpoint = tree.segment_leaf_for(*current);
+        if (
+            seen_segments.insert(endpoint).second &&
+            !tree.has_memory_descendant(endpoint)
+        ) {
+            victim = endpoint;
+        }
+        current = links_.at(*current).next;
+    }
     return MemoryEvictionDecision{
-        tree.segment_leaf_for(*tail_),
+        *victim,
         eviction_action_,
     };
 }

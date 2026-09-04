@@ -13,8 +13,9 @@ placement、淘汰与迁移。C++17 core 是逻辑状态、pool-local 地址、�
 - memory hit 不产生 I/O；
 - storage hit 产生 READ，MemoryPolicy 决定是否提升到内存；
 - global miss 代表计算出新 block，并加入内存，不产生 READ；
-- 内存以 top-to-endpoint Radix segment 淘汰；只有 `Dump` 能把尚无 storage copy 的 block 写入
-  SLC/TLC，`Drop` 直接释放内存副本；
+- 内存按 segment LRU 选择 leaf segment，再以完整 segment 为单位向 parent segment 贪婪回收；
+  已全部写盘的 segment 释放内存副本后继续向上，遇到第一个含未写盘 block 的 segment 时执行
+  一次 `Dump` 或 `Drop` 并停止；
 - StoragePolicy 统一决定 Dump placement、同步 capacity reclaim、access migration 和后台维护；
 - relocation 是管理意图，不是设备 opcode。Simulator 将每个 block 展开为
   `READ(source) -> WRITE(destination) -> TRIM(source)`；access migration 复用本次 storage-hit
@@ -99,7 +100,8 @@ simulator.process_batch(
 
 顶层接口只有 `MemoryPolicy` 和 `StoragePolicy`：
 
-- `baseline_lru`：memory admission 与 segment LRU，淘汰动作可配置为 `dump` 或 `drop`；
+- `baseline_lru`：memory admission、leaf-first segment LRU 和向 parent segment 的贪婪回收，
+  首个含未写盘 block 的 segment 可配置为 `dump` 或 `drop`；
 - `baseline_fixed_lru`：固定 tier/stream placement，leaf-LRU capacity reclaim；
 - `baseline_ratio_lru`：按 SLC write ratio placement，pool 内 round-robin stream；
 - `wear_share_round_robin`：wear-share tier placement 与 pool 内 round-robin stream；
@@ -107,9 +109,24 @@ simulator.process_batch(
 - `adaptive_endurance`：endurance-weighted placement、session gap/q95、自适应 promotion、access
   migration、周期 idle eviction 和后台 migration。
 
+参考目录中的三种算法在当前代码中使用按决策机制命名的 policy：
+
+| 参考算法 | 当前 `StoragePolicyConfig.kind` | C++ policy | 保留的决策 |
+| --- | --- | --- | --- |
+| RR / `rr_wear_sb` | `wear_share_round_robin` | `WearShareRoundRobinStoragePolicy` | 按目标写入份额选择 SLC/TLC，pool 内 round-robin stream |
+| Algorithm1 / `session_wear_sb` | `wear_share_affinity` | `WearShareAffinityStoragePolicy` | 按目标写入份额选择 SLC/TLC，用 affinity 稳定散列到 stream |
+| Algorithm2 / `tiered2` | `adaptive_endurance` | `AdaptiveEnduranceStoragePolicy` | endurance-weighted placement、session gap/q95、occupancy pressure、动态 promotion、后台 migration 和 idle eviction |
+
+这是算法决策的对应关系，不是旧名兼容层；参考算法名不能作为当前 `kind`
+传入。三种 policy 都只在 MemoryPolicy 产生 Dump 时决定初始 placement，global miss
+只先进入内存。`adaptive_endurance` 在 Dump 和 access migration 中使用请求 affinity；
+后台 migration 没有请求上下文，使用 segment endpoint 选择目标 stream。
+
 所有 storage 决策共用一个 policy state，并只通过 commit notification 更新。实现位于
 `cpp/include/dwpdsim/policies/` 和 `cpp/src/policies/`；Simulator 保持 RadixTree、StorageState
 和 LBA allocator 的唯一写权限。
+后台 tick、segment 展开和 `READ -> WRITE -> TRIM` 降低由 Simulator 统一执行；MQSim
+只模拟已决定的物理 I/O，不运行上述 policy。
 
 ## Canonical trace 与 metrics
 
