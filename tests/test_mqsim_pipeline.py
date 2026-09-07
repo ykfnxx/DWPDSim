@@ -518,6 +518,28 @@ def test_result_parser_joins_ids_and_computes_measurement_metrics(tmp_path):
     assert [channel["channel_id"] for channel in result["channels"]] == [0, 1]
 
 
+def test_result_parser_reports_flow_manifest_differences(tmp_path):
+    manifest = convert(
+        tmp_path,
+        [[0, 0, 1, 0, "WRITE", "SLC", 0, 0, 4096, 1, 1, "MEMORY_DUMP", "", ""]],
+    )
+    result_path = tmp_path / "result.xml"
+    write_mqsim_result(result_path, manifest)
+    tree = ET.parse(result_path)
+    flow = next(
+        item for item in tree.findall("Host/Host.IO_Flow") if item.findtext("Flow_ID") == "0"
+    )
+    flow.find("Completed_Request_Count").text = "0"
+    flow.find("Bytes_Transferred_Write").text = "0"
+    tree.write(result_path)
+    with pytest.raises(RuntimeError) as error:
+        read_mqsim_results(result_path, manifest)
+    assert str(error.value) == (
+        "MQSim flow 0 did not match its manifest: "
+        "completed: expected=1, actual=0; bytes_written: expected=4096, actual=0"
+    )
+
+
 def test_result_parser_requires_decimal_integer_fields(tmp_path):
     manifest = convert(
         tmp_path,

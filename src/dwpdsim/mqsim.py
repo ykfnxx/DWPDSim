@@ -813,28 +813,25 @@ def _read_host_results(
             raise RuntimeError(f"MQSim flow {flow_id} has the wrong pool")
         operations = expected["operations"]
         byte_counts = expected["bytes"]
-        expected_values = (
-            expected["commands"],
-            expected["commands"],
-            operations["READ"],
-            operations["WRITE"],
-            operations["TRIM"],
-            byte_counts["READ"],
-            byte_counts["WRITE"],
-            byte_counts["TRIM"],
-        )
-        actual_values = (
-            actual["generated"],
-            actual["completed"],
-            actual["reads"],
-            actual["writes"],
-            actual["trims"],
-            actual["bytes_read"],
-            actual["bytes_written"],
-            actual["bytes_trimmed_requested"],
-        )
-        if actual_values != expected_values:
-            raise RuntimeError(f"MQSim flow {flow_id} did not match its manifest")
+        expected_values = {
+            "generated": expected["commands"],
+            "completed": expected["commands"],
+            "reads": operations["READ"],
+            "writes": operations["WRITE"],
+            "trims": operations["TRIM"],
+            "bytes_read": byte_counts["READ"],
+            "bytes_written": byte_counts["WRITE"],
+            "bytes_trimmed_requested": byte_counts["TRIM"],
+        }
+        differences = [
+            f"{name}: expected={value}, actual={actual[name]}"
+            for name, value in expected_values.items()
+            if actual[name] != value
+        ]
+        if differences:
+            raise RuntimeError(
+                f"MQSim flow {flow_id} did not match its manifest: " + "; ".join(differences)
+            )
     return [actual_by_id[int(flow["flow_id"])] for flow in flows]
 
 
