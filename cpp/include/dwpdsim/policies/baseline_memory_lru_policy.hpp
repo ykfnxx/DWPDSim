@@ -22,7 +22,10 @@ class BaselineMemoryLruPolicy final : public MemoryPolicy {
     ) const override;
     void on_commit(const MemoryMutation& mutation) override;
 
+    MemoryPolicyWork work() const override { return work_; }
+
   private:
+    mutable MemoryPolicyWork work_;
     struct Link {
         std::optional<NodeId> previous;
         std::optional<NodeId> next;

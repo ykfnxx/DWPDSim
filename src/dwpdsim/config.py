@@ -22,10 +22,17 @@ class StorageTierConfig:
 
 @dataclass(frozen=True, slots=True)
 class MemoryPolicyConfig:
-    """Baseline memory LRU decisions."""
+    """Memory LRU: original scan or indexed exact/sampled segment selection."""
 
     kind: str = "baseline_lru"
     admit_storage_hits: bool = True
+    groups: int = 1
+    sampled_groups: int = 0
+    workers: int = 1
+    seed: int = 0
+    profile: bool = False
+    # indexed_lru only: Drop if selected segment idle time is strictly greater.
+    retention_ns: int | None = None
 
 
 @dataclass(frozen=True, slots=True)

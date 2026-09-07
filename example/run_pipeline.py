@@ -68,6 +68,9 @@ def read_requests(path: Path) -> Iterator[Request]:
 
 
 def simulation_config() -> SimulationConfig:
+    retention_ns = optional_int("DWPDSIM_MEMORY_RETENTION_NS")
+    if retention_ns is not None and not 0 <= retention_ns <= 2**64 - 1:
+        raise ValueError("DWPDSIM_MEMORY_RETENTION_NS must be a nonnegative uint64 or empty")
     return SimulationConfig(
         block_size_bytes=int(required("DWPDSIM_BLOCK_SIZE_BYTES")),
         memory=MemoryConfig(capacity_bytes=int(required("DWPDSIM_MEMORY_CAPACITY_BYTES"))),
@@ -82,6 +85,7 @@ def simulation_config() -> SimulationConfig:
         memory_policy=MemoryPolicyConfig(
             kind=required("DWPDSIM_MEMORY_POLICY"),
             admit_storage_hits=boolean("DWPDSIM_ADMIT_STORAGE_HITS"),
+            retention_ns=retention_ns,
         ),
         storage_policy=StoragePolicyConfig(
             kind=required("DWPDSIM_STORAGE_POLICY"),

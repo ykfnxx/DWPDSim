@@ -23,6 +23,7 @@ struct SimulationConfig {
     StorageTierConfig tlc{};
     std::optional<TimestampNs> simulation_end_ns;
     std::uint64_t progress_interval_requests = 0;
+    bool profile_memory = false;
 };
 
 }  // namespace dwpdsim

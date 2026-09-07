@@ -1,6 +1,7 @@
 #include "dwpdsim/simulator.hpp"
 
 #include <algorithm>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <stdexcept>
@@ -8,6 +9,23 @@
 
 namespace dwpdsim {
 namespace {
+
+class MemoryTimer {
+  public:
+    MemoryTimer(bool enabled, std::uint64_t& total) : enabled_(enabled), total_(total) {
+        if (enabled_) { start_ = std::chrono::steady_clock::now(); }
+    }
+    ~MemoryTimer() {
+        if (enabled_) {
+            total_ += std::chrono::duration_cast<std::chrono::nanoseconds>(
+                std::chrono::steady_clock::now() - start_).count();
+        }
+    }
+  private:
+    bool enabled_;
+    std::uint64_t& total_;
+    std::chrono::steady_clock::time_point start_;
+};
 
 NodeSpan span(const std::vector<NodeId>& nodes) {
     return NodeSpan{nodes.data(), nodes.size()};
@@ -70,6 +88,7 @@ Simulator::Simulator(
       storage_policy_(std::move(storage_policy)),
       metrics_(config_),
       trace_writer_(trace_path, config_.block_size_bytes) {
+    memory_policy_->bind_tree(tree_);
     next_background_tick_ns_ = storage_policy_->background_schedule().period_ns;
 }
 
@@ -117,6 +136,8 @@ void Simulator::process_request(
                                               );
         if (created) {
             ++metrics_.tree_nodes_created;
+            MemoryTimer timer(config_.profile_memory, memory_maintenance_ns);
+            memory_policy_->on_node_created(node_id, tree_);
         }
         process_access(AccessContext{
             request,
@@ -290,7 +311,7 @@ void Simulator::process_access(const AccessContext& context) {
     if (node.in_memory) {
         result = AccessResult::MemoryHit;
         tree_.record_access(context.node_id, context.request.timestamp_ns, true);
-        memory_policy_->on_commit(MemoryMutation{
+        notify_memory_commit(MemoryMutation{
             MemoryMutationKind::Accessed,
             context.node_id,
         });
@@ -394,6 +415,11 @@ void Simulator::process_access(const AccessContext& context) {
     active_node_id_.reset();
 }
 
+void Simulator::notify_memory_commit(const MemoryMutation& mutation) {
+    MemoryTimer timer(config_.profile_memory, memory_maintenance_ns);
+    memory_policy_->on_commit(mutation);
+}
+
 void Simulator::insert_into_memory(NodeId node_id, const AccessContext& context) {
     if (memory_used_blocks_ == memory_capacity_blocks_) {
         evict_from_memory(context);
@@ -402,12 +428,16 @@ void Simulator::insert_into_memory(NodeId node_id, const AccessContext& context)
     Node& node = tree_.node(node_id);
     node.in_memory = true;
     ++memory_used_blocks_;
-    memory_policy_->on_commit(MemoryMutation{MemoryMutationKind::Inserted, node_id});
+    notify_memory_commit(MemoryMutation{MemoryMutationKind::Inserted, node_id});
     metrics_.memory_inserted(node.on_storage);
 }
 
 void Simulator::evict_from_memory(const AccessContext& context) {
-    const MemoryEvictionDecision decision = memory_policy_->evict(context.request, tree_);
+    const MemoryEvictionDecision decision = [&] {
+        MemoryTimer timer(config_.profile_memory, memory_decision_ns);
+        ++memory_decisions;
+        return memory_policy_->evict(context.request, tree_);
+    }();
     std::vector<NodeId> memory_nodes;
     std::vector<NodeId> write_nodes;
     std::optional<NodeId> endpoint = decision.leaf_segment_endpoint;
@@ -466,7 +496,7 @@ void Simulator::evict_from_memory(const AccessContext& context) {
             metrics_.memory_removed(victim.on_storage);
             victim.in_memory = false;
             --memory_used_blocks_;
-            memory_policy_->on_commit(
+            notify_memory_commit(
                 MemoryMutation{MemoryMutationKind::Removed, node_id}
             );
         }
@@ -900,6 +930,10 @@ void Simulator::prune_from(NodeId node_id) {
 
         const NodeId removed_id = *current;
         const std::optional<NodeId> parent_id = tree_.detach_leaf(removed_id);
+        {
+            MemoryTimer timer(config_.profile_memory, memory_maintenance_ns);
+            memory_policy_->on_node_pruned(removed_id, parent_id, tree_);
+        }
         ++metrics_.tree_nodes_removed;
         const std::vector<NodeId> removed{removed_id};
         notify_storage_commit(StorageMutation{

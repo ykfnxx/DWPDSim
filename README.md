@@ -191,3 +191,98 @@ converter 的稳定契约是：
 MQSim 的 pool `Host_Write_Bytes` 包含 Memory Dump 和 relocation destination WRITE；它与
 DWPDSim dump-only `storage.<tier>.host_write_bytes` 是两个独立口径，summary 同时保留两者。
 `--event-limit N` 只用于转换/回放前 N 条 semantic I/O 的快速检查；manifest 仍记录完整输入行数。
+
+## Memory 性能实验与批量输入
+
+Memory 的索引实现为显式可选项，StoragePolicy 保持原实现。默认 `baseline_lru` 保留原始
+链表扫描；`indexed_lru` 用 Memory block 的逻辑访问序号维护 segment 的最大热度：
+
+```python
+from dwpdsim import MemoryPolicyConfig
+
+memory_policy = MemoryPolicyConfig(
+    kind="indexed_lru",
+    groups=1,           # 精确单组索引
+    sampled_groups=0,   # 0 查询全部组；非零是近似选择，会改变模拟结果
+    workers=1,          # >1 使用常驻 C++ 线程并行查询各组
+    seed=42,            # 近似分组的确定性 seed
+    profile=False,      # True 额外计量 Memory 决策和维护耗时
+    retention_ns=None,   # 可选空闲保留时间；例如 60 * 1_000_000_000 表示 60 秒
+)
+```
+
+将它传入 `SimulationConfig(memory_policy=memory_policy, ...)`。多线程仅并行候选查询，
+树修改、索引更新与 Dump 提交保持串行。精确模式保持原有 victim、metrics 和 trace 顺序。
+`simulator.memory_performance()` 返回独立工作量计数；启用 profile 后包含纳秒耗时，
+不污染业务 `stats()`。组数增加和 worker 增加不保证更快。
+
+使用 `example/run_pipeline.py` 时，在 `example/.env` 中设置：
+
+```dotenv
+DWPDSIM_MEMORY_POLICY=indexed_lru
+DWPDSIM_MEMORY_RETENTION_NS=60000000000
+```
+
+这里的 `60000000000` 表示 60 秒，须填写纳秒整数，不能写 Python 表达式。
+该环境变量映射到 `MemoryPolicyConfig.retention_ns`；留空或不设置表示关闭，`0` 是有效阈值。
+模板见 [example/.env.example](example/.env.example)。shell 中同名环境变量优先于 `.env`；
+直接构造 Python `SimulationConfig` 不会自动读取这些环境变量。
+
+`retention_ns` 仅用于 `indexed_lru`，默认 `None` 关闭。选出 victim 后，以当前请求的模拟时间
+减去该 segment 中最近被访问的 **Memory 驻留 block** 的访问时间；严格大于阈值时返回
+`Drop`，否则返回 `Dump`。等于阈值仍 Dump，`0` 表示正的空闲时间就 Drop。
+一次访问会刷新判断依据；分裂/合并后按新段的 Memory 成员判断。LRU 选择顺序保持不变，
+只决定选中段的处理动作。不设置定时过期任务；未被选中淘汰的段不会因为超时自动移除。
+Drop 只移除所选段的 Memory 副本，不向父段继续 Dump，不删除已有 Storage 副本。
+启用后会改变写入量及命中结果，原有精确模式等价性与消融结果仅适用于关闭此参数时。
+
+
+安装本地 Parquet 输入依赖：
+
+```bash
+python3 -m pip install -e '.[dev,input]'
+```
+
+输入四列为 `timestamp_ns:uint64`、`request_id:uint64`、`affinity_id:uint64` 和
+`hash_ids:list<uint64>`；保持请求与路径原始顺序，不 shuffle 或去重：
+
+```python
+from dwpdsim import InputConfig, parquet_batches, replay_batches
+
+input_config = InputConfig(
+    batch_requests=1024,
+    batch_hashes=262144,
+    max_request_hashes=1048576,
+    queue_batches=3,
+    inflight_bytes=64 * 1024 * 1024,
+    prefetch=True,
+)
+# simulator 已按上面的 SimulationConfig 创建；按显式分片顺序消费，EOF 后自动 finish。
+input_metrics = replay_batches(
+    simulator,
+    parquet_batches(["part-000.parquet", "part-001.parquet"], input_config),
+    input_config,
+)
+```
+
+`prefetch=False` 是同步批量对照。预算覆盖构造中、队列中及消费中的自有 uint64 buffer，
+不包含 Arrow/HF 解码 workspace；单请求不拆分，超长请求明确报错。
+已存在的 HF Dataset/IterableDataset 使用 `huggingface_batches(dataset, input_config)`；
+Hub 入口为 `hub_batches(repo, revision=固定版本, split="train", config=input_config)`，
+需要额外安装 `python3 -m pip install -e '.[hub]'`。调用者记录数据来源、revision、分片顺序
+及时间原点；适配器不隐式换算时间。
+
+完整消融包含逐请求/批量/输入预取、单组索引/32 组/4 workers/采样 4 组及组合：
+
+```bash
+python3 benchmark/memory_ablation.py --output build/perf/synthetic --requests 20000 --repeats 3
+python3 benchmark/memory_ablation.py --dataset input.parquet --output build/perf/real --repeats 3
+# profile 单独跑，不把额外计时开销混入主时延结果。
+python3 benchmark/memory_ablation.py --dataset input.parquet --output build/perf/profile \
+    --profile --repeats 1 --variants batch,index,groups,workers
+```
+
+实验逐项启动独立进程，记录时延、RSS、窗口进度、Memory 工作量和 trace SHA-256，检查
+精确模式业务结果相同及近似模式可重复；每次计算哈希后删除大 trace，保留 JSON 结果。
+设计与实测结论见 [Memory 性能文档](.design/perf/batched-input-and-segment-eviction.md) 和
+[消融报告](.design/perf/memory-ablation-report.md)。

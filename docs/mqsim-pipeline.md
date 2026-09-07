@@ -120,16 +120,33 @@ config = SimulationConfig(
 
 ### Memory policy
 
-当前 memory policy 固定为 `baseline_lru`：
+Memory policy 支持 `baseline_lru`（默认）和 `indexed_lru`（增量 segment 索引）：
 
 | 参数 | 默认值 | 含义 |
 | --- | --- | --- |
 | `admit_storage_hits` | `True` | storage hit 后是否将 block 提升到内存 |
+| `retention_ns` | `None` | 仅 indexed_lru：选中段的 Memory 空闲时间严格超过此纳秒阈值时 Drop |
 
 `Dump`/`Drop` 是每次 `MemoryPolicy::evict()` 返回的决策，不是独立配置项。当前
 `baseline_lru` 总是返回 `Dump`：Simulator 从选中的 leaf segment 开始向 parent segment
 贪婪回收，在首个含未写盘 block 的 segment 进入 StoragePolicy placement 并产生 WRITE。
-返回 `Drop` 的 memory policy 只剪枝它选中的 leaf segment，不继续处理 parent segment。
+`indexed_lru` 关闭保留时间时也返回 `Dump`。启用 `retention_ns` 后，在选择 victim 时用
+当前模拟时间减去所选段内最近访问的 Memory block 的访问时间；严格大于阈值才返回
+`Drop`，相等时仍 Dump。`0` 表示正空闲时间就 Drop，`None` 表示关闭。访问会刷新时间，
+未被选中的段不会自动过期。Drop 仅移除选中段的 Memory 副本，不继续处理 parent segment；
+已有 Storage 副本保留，只有满足原有条件的空节点才会被剪枝。
+
+在 `example/.env` 中配置 60 秒保留时间：
+
+```dotenv
+DWPDSIM_MEMORY_POLICY=indexed_lru
+DWPDSIM_MEMORY_RETENTION_NS=60000000000
+```
+
+`DWPDSIM_MEMORY_RETENTION_NS` 映射到 `MemoryPolicyConfig.retention_ns`，留空或缺省为
+`None`，非空值必须为 uint64 范围内的非负纳秒整数；不支持单位后缀或 Python 表达式。
+为 `baseline_lru` 设置非空保留时间会报错，不能静默忽略。启用此参数会改变 Dump/Drop
+及后续命中、I/O 结果，不属于与原始 LRU 等价的纯性能优化。
 
 ### Storage policy
 

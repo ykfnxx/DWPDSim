@@ -25,6 +25,7 @@ MemoryEvictionDecision BaselineMemoryLruPolicy::evict(
     std::optional<NodeId> victim;
     std::optional<NodeId> current = head_;
     while (current.has_value()) {
+        ++work_.candidates_examined;
         const NodeId endpoint = tree.segment_leaf_for(*current);
         if (
             seen_segments.insert(endpoint).second &&

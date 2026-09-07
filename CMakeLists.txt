@@ -8,6 +8,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 find_package(Python REQUIRED COMPONENTS Interpreter Development.Module)
 find_package(pybind11 CONFIG REQUIRED)
+find_package(Threads REQUIRED)
 
 add_library(
     dwpdsim_core
@@ -16,6 +17,7 @@ add_library(
     cpp/src/policies/adaptive_endurance_storage_policy.cpp
     cpp/src/policies/baseline_fixed_lru_storage_policy.cpp
     cpp/src/policies/baseline_memory_lru_policy.cpp
+    cpp/src/policies/indexed_memory_lru_policy.cpp
     cpp/src/policies/baseline_ratio_lru_storage_policy.cpp
     cpp/src/policies/storage_policy.cpp
     cpp/src/policies/storage_policy_state.cpp
@@ -27,6 +29,7 @@ add_library(
     cpp/src/trace_writer.cpp
 )
 target_include_directories(dwpdsim_core PUBLIC cpp/include)
+target_link_libraries(dwpdsim_core PUBLIC Threads::Threads)
 set_target_properties(dwpdsim_core PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
 pybind11_add_module(_core MODULE cpp/src/bindings.cpp)
@@ -41,6 +44,9 @@ install(
 option(DWPDSIM_BUILD_TESTS "Build C++ integration tests" OFF)
 if(DWPDSIM_BUILD_TESTS)
     enable_testing()
+    add_executable(indexed_memory_integration_test tests/cpp/indexed_memory_integration_test.cpp)
+    target_link_libraries(indexed_memory_integration_test PRIVATE dwpdsim_core)
+    add_test(NAME indexed_memory_integration_test COMMAND indexed_memory_integration_test)
     add_executable(radix_tree_integration_test tests/cpp/radix_tree_integration_test.cpp)
     target_link_libraries(radix_tree_integration_test PRIVATE dwpdsim_core)
     add_test(NAME radix_tree_integration_test COMMAND radix_tree_integration_test)

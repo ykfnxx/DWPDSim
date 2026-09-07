@@ -34,6 +34,7 @@ class DWPDSimulator:
         core_config.simulation_end_ns = config.simulation_end_ns
         core_config.progress_interval_requests = config.progress_interval_requests
 
+        core_config.profile_memory = config.memory_policy.profile
         memory = config.memory_policy
         storage = config.storage_policy
         slc_host_share = storage.slc_host_share
@@ -50,6 +51,11 @@ class DWPDSimulator:
             str(self.trace_path),
             memory_policy=memory.kind,
             admit_storage_hits=memory.admit_storage_hits,
+            memory_groups=memory.groups,
+            memory_sampled_groups=memory.sampled_groups,
+            memory_workers=memory.workers,
+            memory_seed=memory.seed,
+            memory_retention_ns=memory.retention_ns,
             storage_policy=storage.kind,
             fixed_tier=storage.fixed_tier,
             fixed_stream_id=storage.fixed_stream_id,
@@ -134,6 +140,10 @@ class DWPDSimulator:
                 request.hash_ids,
             )
         return self.stats()
+
+    def memory_performance(self) -> dict[str, int]:
+        """Experimental work counters; timings require MemoryPolicyConfig.profile."""
+        return self._core.memory_performance()
 
     def stats(self) -> dict[str, Any]:
         return self._core.stats()

@@ -21,6 +21,8 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+input = ["numpy>=2", "pyarrow>=18"]
+hub = ["numpy>=2", "pyarrow>=18", "datasets>=3"]
 dev = [
   "numpy>=2",
   "pybind11>=3.0",

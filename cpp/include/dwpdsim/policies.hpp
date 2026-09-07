@@ -8,3 +8,5 @@
 #include "dwpdsim/policies/storage_policy.hpp"
 #include "dwpdsim/policies/wear_share_affinity_storage_policy.hpp"
 #include "dwpdsim/policies/wear_share_round_robin_storage_policy.hpp"
+
+#include "dwpdsim/policies/indexed_memory_lru_policy.hpp"

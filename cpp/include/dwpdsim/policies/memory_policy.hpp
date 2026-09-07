@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <optional>
 
 #include "dwpdsim/types.hpp"
 
@@ -24,9 +25,24 @@ struct MemoryMutation {
     NodeId node_id;
 };
 
+struct MemoryPolicyWork {
+    std::uint64_t candidates_examined = 0;
+    std::uint64_t topology_nodes_examined = 0;
+    std::uint64_t topology_member_moves = 0;
+    std::uint64_t ancestor_updates = 0;
+    std::uint64_t worker_rounds = 0;
+    std::uint64_t indexed_segments = 0;
+    std::uint64_t indexed_residents = 0;
+    std::uint64_t ancestor_entries = 0;
+};
+
 class MemoryPolicy {
   public:
     virtual ~MemoryPolicy() = default;
+    virtual void bind_tree(const RadixTree&) {}
+    virtual void on_node_created(NodeId, const RadixTree&) {}
+    virtual void on_node_pruned(NodeId, std::optional<NodeId>, const RadixTree&) {}
+    virtual MemoryPolicyWork work() const { return {}; }
 
     virtual bool admit_storage_hit(
         const AccessContext& access,

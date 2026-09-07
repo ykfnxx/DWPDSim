@@ -309,6 +309,7 @@ PYBIND11_MODULE(_core, module) {
         .def(py::init<>())
         .def_readwrite("block_size_bytes", &SimulationConfig::block_size_bytes)
         .def_readwrite("memory", &SimulationConfig::memory)
+        .def_readwrite("profile_memory", &SimulationConfig::profile_memory)
         .def_readwrite("slc", &SimulationConfig::slc)
         .def_readwrite("tlc", &SimulationConfig::tlc)
         .def_readwrite("simulation_end_ns", &SimulationConfig::simulation_end_ns)
@@ -338,11 +339,13 @@ PYBIND11_MODULE(_core, module) {
                          double logical_fill_fraction,
                          double slc_erase_budget,
                          double tlc_erase_budget,
-                         TimestampNs background_period_ns
+                         TimestampNs background_period_ns,
+                         std::size_t memory_groups,
+                         std::size_t memory_sampled_groups,
+                         std::size_t memory_workers,
+                         std::uint64_t memory_seed,
+                         std::optional<TimestampNs> memory_retention_ns
                      ) {
-                if (memory_policy != "baseline_lru") {
-                    throw py::value_error("memory policy must be 'baseline_lru'");
-                }
                 if (slc_host_share <= 0.0 || slc_host_share >= 1.0) {
                     throw py::value_error("slc_host_share must be between 0 and 1");
                 }
@@ -352,9 +355,20 @@ PYBIND11_MODULE(_core, module) {
                 if (slc_erase_budget <= 0.0 || tlc_erase_budget <= 0.0) {
                     throw py::value_error("erase budgets must be positive");
                 }
-                auto memory = std::make_unique<BaselineMemoryLruPolicy>(
-                    admit_storage_hits
-                );
+                std::unique_ptr<MemoryPolicy> memory;
+                if (memory_policy == "baseline_lru") {
+                    if (memory_groups != 1 || memory_sampled_groups != 0 || memory_workers != 1 ||
+                        memory_retention_ns.has_value()) {
+                        throw py::value_error("baseline_lru does not use groups, sampling, workers or retention");
+                    }
+                    memory = std::make_unique<BaselineMemoryLruPolicy>(admit_storage_hits);
+                } else if (memory_policy == "indexed_lru") {
+                    memory = std::make_unique<IndexedMemoryLruPolicy>(
+                        admit_storage_hits, memory_groups, memory_sampled_groups,
+                        memory_workers, memory_seed, memory_retention_ns);
+                } else {
+                    throw py::value_error("memory policy must be 'baseline_lru' or 'indexed_lru'");
+                }
                 const WearShareRoundRobinPolicyConfig round_robin{
                     slc_host_share,
                     logical_fill_fraction,
@@ -410,8 +424,29 @@ PYBIND11_MODULE(_core, module) {
             py::arg("logical_fill_fraction"),
             py::arg("slc_erase_budget"),
             py::arg("tlc_erase_budget"),
-            py::arg("background_period_ns")
+            py::arg("background_period_ns"),
+            py::arg("memory_groups") = 1,
+            py::arg("memory_sampled_groups") = 0,
+            py::arg("memory_workers") = 1,
+            py::arg("memory_seed") = 0,
+            py::arg("memory_retention_ns") = py::none()
         )
+        .def("memory_performance", [](const Simulator& simulator) {
+            py::dict result;
+            const auto work = simulator.memory_policy_work();
+            result["decision_ns"] = simulator.memory_decision_ns;
+            result["maintenance_ns"] = simulator.memory_maintenance_ns;
+            result["decisions"] = simulator.memory_decisions;
+            result["candidates_examined"] = work.candidates_examined;
+            result["topology_nodes_examined"] = work.topology_nodes_examined;
+            result["topology_member_moves"] = work.topology_member_moves;
+            result["ancestor_updates"] = work.ancestor_updates;
+            result["worker_rounds"] = work.worker_rounds;
+            result["indexed_segments"] = work.indexed_segments;
+            result["indexed_residents"] = work.indexed_residents;
+            result["ancestor_entries"] = work.ancestor_entries;
+            return result;
+        })
         .def(
             "process",
             py::overload_cast<
