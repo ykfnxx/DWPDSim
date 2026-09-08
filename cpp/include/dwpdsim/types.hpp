@@ -98,6 +98,8 @@ struct Node {
     bool in_memory = false;
     bool on_storage = false;
     bool has_last_hit = false;
+    // Dump initializes this; a storage hit touches all same-tier segment residents.
+    TimestampNs storage_last_access_timestamp_ns = 0;
 
     StorageLocation storage_location() const noexcept {
         return StorageLocation{storage_tier, storage_block_address, storage_stream_id};

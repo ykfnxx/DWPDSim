@@ -22,7 +22,12 @@ class StoragePolicyState {
     std::optional<SegmentTime> lru_leaf(
         StorageTier tier,
         NodeSpan protected_nodes,
-        const StorageView& storage
+        const StorageView& storage,
+        StoragePolicyWork* work = nullptr
+    ) const;
+    std::optional<SegmentTime> lru_leaf_fused(
+        StorageTier tier, NodeSpan protected_nodes, const StorageView& storage,
+        StoragePolicyWork& work
     ) const;
     std::optional<SegmentTime> oldest_segment(
         StorageTier tier,

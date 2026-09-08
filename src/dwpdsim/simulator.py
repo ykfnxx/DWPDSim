@@ -57,6 +57,10 @@ class DWPDSimulator:
             memory_seed=memory.seed,
             memory_retention_ns=memory.retention_ns,
             storage_policy=storage.kind,
+            rr_victim_search=storage.rr_victim_search,
+            rr_subtree_counts=storage.rr_subtree_counts,
+            rr_verify_victims=storage.rr_verify_victims,
+            rr_profile=storage.rr_profile,
             fixed_tier=storage.fixed_tier,
             fixed_stream_id=storage.fixed_stream_id,
             slc_write_ratio=storage.slc_write_ratio,
@@ -140,6 +144,10 @@ class DWPDSimulator:
                 request.hash_ids,
             )
         return self.stats()
+
+    def storage_performance(self) -> dict[str, int]:
+        """RR query/maintenance counters; timers require rr_profile=True."""
+        return self._core.storage_performance()
 
     def memory_performance(self) -> dict[str, int]:
         """Experimental work counters; timings require MemoryPolicyConfig.profile."""

@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <limits>
 #include <set>
+#include <unordered_set>
 
 namespace dwpdsim {
 
@@ -60,11 +61,13 @@ void StoragePolicyState::on_commit(
 std::optional<StoragePolicyState::SegmentTime> StoragePolicyState::lru_leaf(
     StorageTier tier,
     NodeSpan protected_nodes,
-    const StorageView& storage
+    const StorageView& storage,
+    StoragePolicyWork* work
 ) const {
     std::optional<SegmentTime> best;
     std::set<NodeId> visited;
     for (const auto& [node_id, entry] : entries_) {
+        if (work) { ++work->entries_examined; }
         if (entry.tier != tier || !storage.tree().contains(node_id)) {
             continue;
         }
@@ -77,6 +80,39 @@ std::optional<StoragePolicyState::SegmentTime> StoragePolicyState::lru_leaf(
         const TimestampNs last_ns = segment_last_ns(endpoint, tier, storage);
         if (!best.has_value() || last_ns < best->timestamp_ns ||
             (last_ns == best->timestamp_ns && endpoint < best->endpoint)) {
+            best = SegmentTime{endpoint, last_ns};
+        }
+    }
+    return best;
+}
+
+std::optional<StoragePolicyState::SegmentTime> StoragePolicyState::lru_leaf_fused(
+    StorageTier tier, NodeSpan protected_nodes, const StorageView& storage,
+    StoragePolicyWork& work
+) const {
+    std::optional<SegmentTime> best;
+    std::unordered_set<NodeId> visited_nodes;
+    std::vector<NodeId> nodes;
+    for (const auto& [node_id, entry] : entries_) {
+        ++work.entries_examined;
+        if (entry.tier != tier || visited_nodes.count(node_id)) { continue; }
+        const NodeId endpoint = storage.tree().segment_leaf_for(node_id);
+        storage.tree().resolve_segment(endpoint, nodes);
+        ++work.candidates_examined;
+        TimestampNs last_ns = 0;
+        bool protected_segment = false;
+        for (NodeId id : nodes) {
+            ++work.segment_nodes_examined;
+            visited_nodes.insert(id);
+            const Node& node = storage.tree().node(id);
+            if (node.on_storage && node.storage_tier == tier) {
+                last_ns = std::max(last_ns, entries_.at(id).last_ns);
+            }
+            protected_segment |= std::find(protected_nodes.begin(), protected_nodes.end(), id)
+                                 != protected_nodes.end();
+        }
+        if (protected_segment || storage.tree().has_storage_descendant(endpoint)) { continue; }
+        if (!best || std::pair{last_ns, endpoint} < std::pair{best->timestamp_ns, best->endpoint}) {
             best = SegmentTime{endpoint, last_ns};
         }
     }

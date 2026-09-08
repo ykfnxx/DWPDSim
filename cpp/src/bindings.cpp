@@ -344,7 +344,11 @@ PYBIND11_MODULE(_core, module) {
                          std::size_t memory_sampled_groups,
                          std::size_t memory_workers,
                          std::uint64_t memory_seed,
-                         std::optional<TimestampNs> memory_retention_ns
+                         std::optional<TimestampNs> memory_retention_ns,
+                         const std::string& rr_victim_search,
+                         bool rr_subtree_counts,
+                         bool rr_verify_victims,
+                         bool rr_profile
                      ) {
                 if (slc_host_share <= 0.0 || slc_host_share >= 1.0) {
                     throw py::value_error("slc_host_share must be between 0 and 1");
@@ -372,6 +376,10 @@ PYBIND11_MODULE(_core, module) {
                 const WearShareRoundRobinPolicyConfig round_robin{
                     slc_host_share,
                     logical_fill_fraction,
+                    rr_victim_search,
+                    rr_subtree_counts,
+                    rr_verify_victims,
+                    rr_profile,
                 };
                 const WearShareAffinityPolicyConfig affinity{
                     slc_host_share,
@@ -429,8 +437,27 @@ PYBIND11_MODULE(_core, module) {
             py::arg("memory_sampled_groups") = 0,
             py::arg("memory_workers") = 1,
             py::arg("memory_seed") = 0,
-            py::arg("memory_retention_ns") = py::none()
+            py::arg("memory_retention_ns") = py::none(),
+            py::arg("rr_victim_search") = "indexed",
+            py::arg("rr_subtree_counts") = false,
+            py::arg("rr_verify_victims") = false,
+            py::arg("rr_profile") = false
         )
+        .def("storage_performance", [](const Simulator& simulator) {
+            py::dict result;
+            const auto work = simulator.storage_policy_work();
+            result["decisions"] = work.decisions;
+            result["decision_ns"] = work.decision_ns;
+            result["maintenance_ns"] = work.maintenance_ns;
+            result["entries_examined"] = work.entries_examined;
+            result["candidates_examined"] = work.candidates_examined;
+            result["segment_nodes_examined"] = work.segment_nodes_examined;
+            result["ancestor_updates"] = work.ancestor_updates;
+            result["verified_decisions"] = work.verified_decisions;
+            result["indexed_segments"] = work.indexed_segments;
+            result["ancestor_entries"] = work.ancestor_entries;
+            return result;
+        })
         .def("memory_performance", [](const Simulator& simulator) {
             py::dict result;
             const auto work = simulator.memory_policy_work();

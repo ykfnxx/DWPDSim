@@ -71,3 +71,26 @@ def test_shell_environment_overrides_dotenv_retention(monkeypatch, tmp_path):
 def test_env_rejects_out_of_range_retention(monkeypatch, tmp_path, retention):
     with pytest.raises(ValueError, match="DWPDSIM_MEMORY_RETENTION_NS"):
         configure(monkeypatch, tmp_path, retention)
+
+
+@pytest.mark.parametrize(
+    "mode,counts", [("scan", "false"), ("fused", "false"), ("indexed", "true")]
+)
+def test_env_rr_options_reach_native_reclaim(monkeypatch, tmp_path, mode, counts):
+    configure(monkeypatch, tmp_path, "")
+    monkeypatch.setenv("DWPDSIM_STORAGE_POLICY", "wear_share_round_robin")
+    monkeypatch.setenv("DWPDSIM_SLC_CAPACITY_BYTES", "16384")
+    monkeypatch.setenv("DWPDSIM_TLC_CAPACITY_BYTES", "16384")
+    monkeypatch.setenv("DWPDSIM_RR_VICTIM_SEARCH", mode)
+    monkeypatch.setenv("DWPDSIM_RR_SUBTREE_COUNTS", counts)
+    monkeypatch.setenv("DWPDSIM_RR_VERIFY_VICTIMS", "true")
+    monkeypatch.setenv("DWPDSIM_RR_PROFILE", "true")
+    namespace = runpy.run_path(str(ROOT / "example/run_pipeline.py"))
+    with DWPDSimulator(namespace["simulation_config"](), tmp_path / "rr.csv") as sim:
+        for i in range(40):
+            sim.process(i, i, 0, [i * 2, i * 2 + 1])
+    work = sim.storage_performance()
+    assert work["decisions"] > 0
+    assert work["decisions"] == work["verified_decisions"]
+    assert work["decision_ns"] > 0
+    assert bool(work["ancestor_updates"]) == (counts == "true")

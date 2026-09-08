@@ -41,8 +41,8 @@ def optional_float(name: str) -> float | None:
     return None if value == "" else float(value)
 
 
-def boolean(name: str) -> bool:
-    value = required(name).lower()
+def boolean(name: str, default: str | None = None) -> bool:
+    value = (required(name) if default is None else os.environ.get(name, default)).lower()
     if value not in {"true", "false"}:
         raise ValueError(f"{name} must be true or false")
     return value == "true"
@@ -89,6 +89,10 @@ def simulation_config() -> SimulationConfig:
         ),
         storage_policy=StoragePolicyConfig(
             kind=required("DWPDSIM_STORAGE_POLICY"),
+            rr_victim_search=os.environ.get("DWPDSIM_RR_VICTIM_SEARCH", "indexed"),
+            rr_subtree_counts=boolean("DWPDSIM_RR_SUBTREE_COUNTS", "false"),
+            rr_verify_victims=boolean("DWPDSIM_RR_VERIFY_VICTIMS", "false"),
+            rr_profile=boolean("DWPDSIM_RR_PROFILE", "false"),
             fixed_tier=required("DWPDSIM_FIXED_TIER"),
             fixed_stream_id=int(required("DWPDSIM_FIXED_STREAM_ID")),
             slc_write_ratio=float(required("DWPDSIM_SLC_WRITE_RATIO")),

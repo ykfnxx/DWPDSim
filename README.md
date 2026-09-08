@@ -117,6 +117,19 @@ simulator.process_batch(
 | Algorithm1 / `session_wear_sb` | `wear_share_affinity` | `WearShareAffinityStoragePolicy` | 按目标写入份额选择 SLC/TLC，用 affinity 稳定散列到 stream |
 | Algorithm2 / `tiered2` | `adaptive_endurance` | `AdaptiveEnduranceStoragePolicy` | endurance-weighted placement、session gap/q95、occupancy pressure、动态 promotion、后台 migration 和 idle eviction |
 
+RR 默认使用精确 segment 索引，tier placement、stream 轮转、Storage LRU 时间与
+`(last_ns, endpoint)` 平局顺序保持原行为。`StoragePolicyConfig` 的 RR 专用参数：
+
+- `rr_victim_search="indexed"`：有序索引；`"scan"` 使用原始扫描；`"fused"` 合并候选的重复遍历。
+- `rr_subtree_counts=False`：默认使用树搜索检查 Storage 后代；True 启用增量子树计数用于消融。
+- `rr_verify_victims=False`：True 时额外维护原扫描状态，逐次校验 victim 和时间；用于正确性验证。
+- `rr_profile=False`：True 时计时 RR 查询与 policy 状态维护，通过 `sim.storage_performance()` 读取。
+
+示例入口对应 `DWPDSIM_RR_VICTIM_SEARCH`、`DWPDSIM_RR_SUBTREE_COUNTS`、
+`DWPDSIM_RR_VERIFY_VICTIMS`、`DWPDSIM_RR_PROFILE`；旧 `.env` 未填写时使用上述默认值。
+其他 StoragePolicy 不使用这些 RR 参数。完整实现、消融与复现命令见
+[RR 性能报告](.design/perf/rr-storage-ablation.md)。
+
 这是算法决策的对应关系，不是旧名兼容层；参考算法名不能作为当前 `kind`
 传入。三种 policy 都只在 MemoryPolicy 产生 Dump 时决定初始 placement，global miss
 只先进入内存。`adaptive_endurance` 在 Dump 和 access migration 中使用请求 affinity；

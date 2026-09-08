@@ -50,6 +50,7 @@ class Simulator {
     const RadixTree& tree() const noexcept;
     const StorageState& storage() const noexcept;
     StoragePolicyStats storage_policy_stats() const;
+    StoragePolicyWork storage_policy_work() const { return storage_policy_->work(); }
     MemoryPolicyWork memory_policy_work() const { return memory_policy_->work(); }
     std::uint64_t memory_decision_ns = 0;
     std::uint64_t memory_maintenance_ns = 0;

@@ -54,6 +54,11 @@ class StoragePolicyConfig:
     slc_erase_budget: float = 120.0
     tlc_erase_budget: float = 12.0
     background_period_ns: int = 900 * 1_000_000_000
+    # RR-only exact implementations and opt-in experiment instrumentation.
+    rr_victim_search: str = "indexed"
+    rr_subtree_counts: bool = False
+    rr_verify_victims: bool = False
+    rr_profile: bool = False
 
 
 @dataclass(frozen=True, slots=True)

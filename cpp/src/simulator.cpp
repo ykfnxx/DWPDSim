@@ -136,8 +136,11 @@ void Simulator::process_request(
                                               );
         if (created) {
             ++metrics_.tree_nodes_created;
-            MemoryTimer timer(config_.profile_memory, memory_maintenance_ns);
-            memory_policy_->on_node_created(node_id, tree_);
+            {
+                MemoryTimer timer(config_.profile_memory, memory_maintenance_ns);
+                memory_policy_->on_node_created(node_id, tree_);
+            }
+            storage_policy_->on_node_created(node_id, storage_view());
         }
         process_access(AccessContext{
             request,
@@ -934,6 +937,7 @@ void Simulator::prune_from(NodeId node_id) {
             MemoryTimer timer(config_.profile_memory, memory_maintenance_ns);
             memory_policy_->on_node_pruned(removed_id, parent_id, tree_);
         }
+        storage_policy_->on_node_pruned(removed_id, parent_id, storage_view());
         ++metrics_.tree_nodes_removed;
         const std::vector<NodeId> removed{removed_id};
         notify_storage_commit(StorageMutation{
@@ -952,6 +956,12 @@ void Simulator::prune_from(NodeId node_id) {
 }
 
 void Simulator::notify_storage_commit(const StorageMutation& mutation) {
+    if (mutation.kind == StorageMutationKind::DumpWriteCommitted ||
+        mutation.kind == StorageMutationKind::StorageAccessCommitted) {
+        for (NodeId node_id : mutation.nodes) {
+            tree_.node(node_id).storage_last_access_timestamp_ns = mutation.timestamp_ns;
+        }
+    }
     storage_policy_->on_commit(mutation, storage_view());
 }
 

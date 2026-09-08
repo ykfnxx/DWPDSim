@@ -124,9 +124,26 @@ struct StoragePolicyStats {
     double idle_threshold_seconds = 0.0;
 };
 
+struct StoragePolicyWork {
+    std::uint64_t decisions = 0;
+    std::uint64_t decision_ns = 0;
+    std::uint64_t maintenance_ns = 0;
+    std::uint64_t entries_examined = 0;
+    std::uint64_t candidates_examined = 0;
+    std::uint64_t segment_nodes_examined = 0;
+    std::uint64_t ancestor_updates = 0;
+    std::uint64_t verified_decisions = 0;
+    std::uint64_t indexed_segments = 0;
+    std::uint64_t ancestor_entries = 0;
+};
+
 class StoragePolicy {
   public:
     virtual ~StoragePolicy() = default;
+
+    virtual void on_node_created(NodeId, const StorageView&) {}
+    virtual void on_node_pruned(NodeId, std::optional<NodeId>, const StorageView&) {}
+    virtual StoragePolicyWork work() const { return {}; }
 
     virtual BackgroundSchedule background_schedule() const = 0;
     virtual void on_request_begin(
