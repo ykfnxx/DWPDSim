@@ -125,6 +125,54 @@ void drop_prunes_only_the_selected_leaf_segment() {
     std::filesystem::remove(trace);
 }
 
+void storage_resident_suffix_after_a_gap_counts_as_misses() {
+    const auto trace = std::filesystem::temp_directory_path() /
+                       "dwpdsim-prefix-gap.csv";
+    dwpdsim::Simulator simulator(
+        config(5, 8, 4),
+        std::make_unique<ScriptedMemoryPolicy>(
+            std::vector<dwpdsim::MemoryEvictionDecision>{
+                {4, dwpdsim::MemoryEvictionAction::Dump},
+                {7, dwpdsim::MemoryEvictionAction::Dump},
+                {3, dwpdsim::MemoryEvictionAction::Drop},
+                {8, dwpdsim::MemoryEvictionAction::Drop},
+                {9, dwpdsim::MemoryEvictionAction::Drop},
+            }
+        ),
+        std::make_unique<dwpdsim::BaselineFixedLruStoragePolicy>(
+            dwpdsim::Placement{StorageTier::Slc, 0}
+        ),
+        trace
+    );
+
+    process(simulator, 0, 1, {1, 2, 3, 4});
+    process(simulator, 1, 2, {1, 2, 6});
+    process(simulator, 2, 3, {1, 2, 3, 7});
+    process(simulator, 3, 4, {8});
+    process(simulator, 4, 5, {9});
+    assert(simulator.tree().node(1).in_memory);
+    assert(simulator.tree().node(2).in_memory);
+    assert(!simulator.tree().node(3).in_memory);
+    assert(!simulator.tree().node(3).on_storage);
+    assert(simulator.tree().node(4).on_storage);
+    const auto before = simulator.metrics();
+
+    process(simulator, 5, 6, {1, 2, 3, 4});
+    const auto after = simulator.metrics();
+    assert(after.block_access_count - before.block_access_count == 4);
+    assert(after.memory_hits - before.memory_hits == 2);
+    assert(after.slc_hits == before.slc_hits);
+    assert(after.global_misses - before.global_misses == 2);
+    // Statistics truncate the prefix; the resident suffix still follows normal I/O.
+    assert(after.io[0].reads - before.io[0].reads == 1);
+
+    process(simulator, 6, 7, {1, 2, 3, 4});
+    assert(simulator.metrics().memory_hits - after.memory_hits == 4);
+    assert(simulator.metrics().global_misses == after.global_misses);
+    simulator.finish();
+    std::filesystem::remove(trace);
+}
+
 void dump_is_one_atomic_segment_admission() {
     const auto trace = std::filesystem::temp_directory_path() /
                        "dwpdsim-vnext-atomic-dump.csv";
@@ -386,6 +434,7 @@ void configuration_rejects_more_than_eight_total_streams() {
 }  // namespace
 
 int main() {
+    storage_resident_suffix_after_a_gap_counts_as_misses();
     drop_prunes_only_the_selected_leaf_segment();
     dump_is_one_atomic_segment_admission();
     dump_reclaim_is_leaf_first_and_greedy_by_segment();

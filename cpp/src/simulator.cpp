@@ -123,6 +123,7 @@ void Simulator::process_request(
     last_timestamp_ns_ = timestamp_ns;
 
     std::optional<NodeId> parent_id;
+    bool prefix_hit = true;
     for (std::size_t position = 0; position < hash_count; ++position) {
         const auto [node_id, created] = parent_id.has_value()
                                             ? tree_.get_or_create(
@@ -142,13 +143,15 @@ void Simulator::process_request(
             }
             storage_policy_->on_node_created(node_id, storage_view());
         }
-        process_access(AccessContext{
+        const AccessResult result = process_access(AccessContext{
             request,
             next_access_sequence_++,
             static_cast<std::uint64_t>(position),
             node_id,
             parent_id,
         });
+        prefix_hit = prefix_hit && result != AccessResult::GlobalMiss;
+        metrics_.record_access(prefix_hit ? result : AccessResult::GlobalMiss);
         parent_id = node_id;
     }
 }
@@ -306,7 +309,7 @@ void Simulator::drain_background_tick(TimestampNs timestamp_ns) {
     }
 }
 
-void Simulator::process_access(const AccessContext& context) {
+AccessResult Simulator::process_access(const AccessContext& context) {
     active_node_id_ = context.node_id;
     Node& node = tree_.node(context.node_id);
     AccessResult result;
@@ -414,8 +417,8 @@ void Simulator::process_access(const AccessContext& context) {
         insert_into_memory(context.node_id, context);
     }
 
-    metrics_.record_access(result);
     active_node_id_.reset();
+    return result;
 }
 
 void Simulator::notify_memory_commit(const MemoryMutation& mutation) {

@@ -104,6 +104,27 @@ def test_baseline_dump_and_storage_hit_have_consistent_metrics(tmp_path):
     assert [row["reason"] for row in rows] == ["MEMORY_DUMP", "STORAGE_HIT", "MEMORY_DUMP"]
 
 
+@pytest.mark.parametrize("tier", ["slc", "tlc"])
+def test_prefix_hits_can_cross_storage_and_memory(tmp_path, tier):
+    simulator = DWPDSimulator(
+        config(
+            memory_policy=MemoryPolicyConfig(admit_storage_hits=False),
+            storage_policy=StoragePolicyConfig(kind="baseline_fixed_lru", fixed_tier=tier),
+        ),
+        tmp_path / f"mixed-prefix-{tier}.csv",
+    )
+    simulator.process(0, 1, 1, [1, 2])
+    before = simulator.stats()["accesses"]
+    simulator.process(1, 2, 1, [1, 2, 3, 4])
+    after = simulator.stats()["accesses"]
+    assert after["total"] - before["total"] == 4
+    assert after[f"{tier}_hits"] - before[f"{tier}_hits"] == 1
+    assert after["memory_hits"] - before["memory_hits"] == 1
+    assert after["global_misses"] - before["global_misses"] == 2
+    assert after["total_hit_rate"] == 2 / 6
+    simulator.finish()
+
+
 def test_dump_admission_is_atomic_and_rejection_drops_memory_segment(tmp_path):
     simulator = DWPDSimulator(
         config(

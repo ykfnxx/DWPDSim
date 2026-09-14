@@ -74,7 +74,7 @@ class Simulator {
     ) const;
     void run_until(TimestampNs target_ns);
     void drain_background_tick(TimestampNs timestamp_ns);
-    void process_access(const AccessContext& context);
+    AccessResult process_access(const AccessContext& context);
     void notify_memory_commit(const MemoryMutation& mutation);
     void insert_into_memory(NodeId node_id, const AccessContext& context);
     void evict_from_memory(const AccessContext& context);

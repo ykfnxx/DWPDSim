@@ -160,6 +160,14 @@ adaptive-endurance gap/q95/idle threshold、placement 和错误计数。DWPDSim 
 `host_write_bytes` 只统计
 Memory Dump；relocation destination WRITE 只进入 program bytes。
 
+命中统计按每个请求在 DRAM 与 SLC/TLC 中的联合连续前缀计算：层级切换不打断命中，
+首次两处都不存在的 block 及其全部后缀均计入 `global_misses`，即使后缀仍有缓存副本。
+例如 A 在 Storage、B 在 DRAM、C 缺失、D 驻留时，该请求计 2 hit、2 miss。
+`memory_hit_rate` 和 `total_hit_rate` 的分母为全部 block 访问数；`storage_hit_rate`
+为 `(slc_hits + tlc_hits) / (slc_hits + tlc_hits + global_misses)`，分母为未计作内存命中的访问数。
+该前缀规则用于访问命中统计；节点访问状态、缓存读写、提升与淘汰仍按逐 block 的实际驻留状态执行，
+因此 Storage READ 数不一定等于统计的 Storage hit 数。
+
 ## MQSim pipeline
 
 完整的 workload、DWPDSim policy、SSD XML 和运行配置见
