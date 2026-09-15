@@ -253,7 +253,7 @@ DWPDSIM_MEMORY_RETENTION_NS=60000000000
 模板见 [example/.env.example](example/.env.example)。shell 中同名环境变量优先于 `.env`；
 直接构造 Python `SimulationConfig` 不会自动读取这些环境变量。
 
-`retention_ns` 仅用于 `indexed_lru`，默认 `None` 关闭。选出 victim 后，以当前请求的模拟时间
+`retention_ns` 用于 `indexed_lru` 和 `context_lru`，默认 `None` 关闭。选出 victim 后，以当前请求的模拟时间
 减去该 segment 中最近被访问的 **Memory 驻留 block** 的访问时间；严格大于阈值时返回
 `Drop`，否则返回 `Dump`。等于阈值仍 Dump，`0` 表示正的空闲时间就 Drop。
 一次访问会刷新判断依据；分裂/合并后按新段的 Memory 成员判断。LRU 选择顺序保持不变，
@@ -261,6 +261,40 @@ DWPDSIM_MEMORY_RETENTION_NS=60000000000
 Drop 只移除所选段的 Memory 副本，不向父段继续 Dump，不删除已有 Storage 副本。
 启用后会改变写入量及命中结果，原有精确模式等价性与消融结果仅适用于关闭此参数时。
 
+
+### Context-aware Memory LRU
+
+`context_lru` 复用 indexed LRU 的 segment 索引、拓扑更新、storage-hit admission 和
+retention 动作判断，使用单组全局精确候选选择：
+
+1. 按 segment 最近访问序号从老到新遍历，只纳入没有 Memory 驻留后代段的合法 leaf segment。
+2. 累计候选段的 **Memory 驻留 block 数**，达到 `alpha × Memory 容量 block 数` 后停止。
+   至少纳入一段；跨过预算的最后一段完整纳入；合法候选不足时使用全部候选。
+3. 按 `(endpoint 深度, 段内 Memory 驻留 block 数, 最近访问序号, endpoint ID)` 升序选择 victim。
+   根下第一个 block 的深度为 1；深度沿全局树父链计算，包括非 Memory 驻留前缀。
+
+`alpha` 范围为 `(0, 1]`，默认 `0.01`，不接受 NaN 或无穷值。预算以配置容量为基准，
+不是候选总容量。较小 alpha 更接近 LRU；若最老的一段已经达到预算，本次只考虑该段。
+`groups=1`、`sampled_groups=0`、`workers=1` 是此 policy 的固定约束，seed 不参与选择。
+
+Python 配置：
+
+```python
+memory_policy = MemoryPolicyConfig(kind="context_lru", alpha=0.01)
+```
+
+使用配置文件时，修改 `example/.env`（完整模板为 `example/.env.example`）：
+
+```dotenv
+DWPDSIM_MEMORY_POLICY=context_lru
+DWPDSIM_MEMORY_ALPHA=0.01
+DWPDSIM_MEMORY_RETENTION_NS=
+```
+
+alpha 仅影响 `context_lru`。排序控制起始 victim；`Dump` 仍可能继续向父段回收。
+endpoint 深度近似重算 context 长度，不等于未来请求的完整长度；Memory 淘汰也可能保留
+Storage 副本。策略效果需比较回放的 `accesses.compute_cost` 和 `accesses.global_misses`。
+候选选择顺序扫描冷段索引，并沿父链计算各候选深度；较大 alpha 会增加决策开销。
 
 安装本地 Parquet 输入依赖：
 

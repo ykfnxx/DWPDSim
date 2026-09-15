@@ -86,6 +86,7 @@ def simulation_config() -> SimulationConfig:
             kind=required("DWPDSIM_MEMORY_POLICY"),
             admit_storage_hits=boolean("DWPDSIM_ADMIT_STORAGE_HITS"),
             retention_ns=retention_ns,
+            alpha=float(os.environ.get("DWPDSIM_MEMORY_ALPHA", "0.01")),
         ),
         storage_policy=StoragePolicyConfig(
             kind=required("DWPDSIM_STORAGE_POLICY"),

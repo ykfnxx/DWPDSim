@@ -349,7 +349,8 @@ PYBIND11_MODULE(_core, module) {
                          const std::string& rr_victim_search,
                          bool rr_subtree_counts,
                          bool rr_verify_victims,
-                         bool rr_profile
+                         bool rr_profile,
+                         double memory_alpha
                      ) {
                 if (slc_host_share <= 0.0 || slc_host_share >= 1.0) {
                     throw py::value_error("slc_host_share must be between 0 and 1");
@@ -371,8 +372,18 @@ PYBIND11_MODULE(_core, module) {
                     memory = std::make_unique<IndexedMemoryLruPolicy>(
                         admit_storage_hits, memory_groups, memory_sampled_groups,
                         memory_workers, memory_seed, memory_retention_ns);
+                } else if (memory_policy == "context_lru") {
+                    if (memory_groups != 1 || memory_sampled_groups != 0 || memory_workers != 1) {
+                        throw py::value_error("context_lru requires groups=1, sampled_groups=0, workers=1");
+                    }
+                    if (config.block_size_bytes == 0) {
+                        throw py::value_error("block_size_bytes must be positive");
+                    }
+                    memory = std::make_unique<ContextMemoryLruPolicy>(
+                        admit_storage_hits, config.memory.capacity_bytes / config.block_size_bytes,
+                        memory_alpha, memory_retention_ns);
                 } else {
-                    throw py::value_error("memory policy must be 'baseline_lru' or 'indexed_lru'");
+                    throw py::value_error("memory policy must be 'baseline_lru', 'indexed_lru' or 'context_lru'");
                 }
                 const WearShareRoundRobinPolicyConfig round_robin{
                     slc_host_share,
@@ -442,7 +453,8 @@ PYBIND11_MODULE(_core, module) {
             py::arg("rr_victim_search") = "indexed",
             py::arg("rr_subtree_counts") = false,
             py::arg("rr_verify_victims") = false,
-            py::arg("rr_profile") = false
+            py::arg("rr_profile") = false,
+            py::arg("memory_alpha") = 0.01
         )
         .def("storage_performance", [](const Simulator& simulator) {
             py::dict result;

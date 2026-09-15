@@ -127,7 +127,7 @@ Python `DWPDSimulator` 将 `SimulationConfig`、MemoryPolicy 配置和 StoragePo
 5. 打开 canonical trace；
 6. 从 StoragePolicy 的 `background_schedule()` 取得第一个虚拟后台 tick。
 
-当前只提供 `baseline_lru` MemoryPolicy；StoragePolicy 五选一。两类 policy 在同一模拟器中组合：
+MemoryPolicy 提供 `baseline_lru`、`indexed_lru` 和 `context_lru`；StoragePolicy 五选一。两类 policy 在同一模拟器中组合：
 MemoryPolicy 决定 DRAM 如何管理，StoragePolicy 决定写到 SSD 后如何管理。
 
 ## 5. 单条请求的完整流程

@@ -1,5 +1,7 @@
 """Observable replay equivalence for the indexed MemoryPolicy and batch input."""
 
+import csv
+import io
 import random
 from dataclasses import replace
 
@@ -129,12 +131,13 @@ def write_parquet(path, requests):
 
 
 @pytest.mark.parametrize("prefetch", [False, True])
-def test_columnar_queue_matches_row_replay_and_bounds_buffers(tmp_path, prefetch):
+@pytest.mark.parametrize("kind", ["indexed_lru", "context_lru"])
+def test_columnar_queue_matches_row_replay_and_bounds_buffers(tmp_path, prefetch, kind):
     requests = list(workload(count=113))
     paths = [tmp_path / "a.parquet", tmp_path / "b.parquet"]
     write_parquet(paths[0], requests[:55])
     write_parquet(paths[1], requests[55:])
-    cfg = replace(configuration(7, 24), memory_policy=MemoryPolicyConfig(kind="indexed_lru"))
+    cfg = replace(configuration(7, 24), memory_policy=MemoryPolicyConfig(kind=kind, alpha=0.5))
     expected = run(tmp_path, "rows", cfg, requests)
     input_cfg = InputConfig(
         batch_requests=9,
@@ -343,3 +346,80 @@ def test_retention_is_not_silently_accepted_by_baseline(tmp_path):
     cfg = replace(configuration(1, 8), memory_policy=MemoryPolicyConfig(retention_ns=10))
     with pytest.raises(ValueError, match="retention"):
         DWPDSimulator(cfg, tmp_path / "baseline-retention.csv")
+
+
+@pytest.mark.parametrize(
+    "alpha,expected",
+    [(0.01, [1, 2, 3]), (0.6, [1, 2, 3]), (0.61, [4]), (0.8, [4]), (1.0, [4])],
+)
+def test_context_lru_capacity_budget_and_recency_tie(tmp_path, alpha, expected):
+    cfg = replace(
+        configuration(5, 32),
+        memory_policy=MemoryPolicyConfig(kind="context_lru", alpha=alpha),
+    )
+    _, trace, _ = run(tmp_path, "context-budget", cfg, [
+        (0, 0, 0, [1, 2, 3]), (1, 1, 0, [4]), (2, 2, 0, [5]), (3, 3, 0, [6]),
+    ])
+    rows = list(csv.DictReader(io.StringIO(trace.decode())))
+    assert [(r["operation"], int(r["hash_id"])) for r in rows] == [
+        ("WRITE", node) for node in expected
+    ]
+
+
+def test_context_lru_uses_depth_before_segment_size(tmp_path):
+    cfg = replace(
+        configuration(7, 32),
+        memory_policy=MemoryPolicyConfig(kind="context_lru", alpha=1),
+    )
+    # The two one-block suffixes have depth 4; the later two-block root segment has depth 2.
+    _, trace, _ = run(tmp_path, "context-depth", cfg, [
+        (0, 0, 0, [1, 2, 3, 4]), (1, 1, 0, [1, 2, 3, 5]),
+        (2, 2, 0, [6, 7]), (3, 3, 0, [8]),
+    ])
+    rows = list(csv.DictReader(io.StringIO(trace.decode())))
+    assert [int(r["hash_id"]) for r in rows] == [6, 7]
+
+
+def test_context_lru_equal_depth_prefers_fewer_residents(tmp_path):
+    cfg = replace(
+        configuration(7, 32),
+        memory_policy=MemoryPolicyConfig(kind="context_lru", alpha=1),
+    )
+    _, trace, _ = run(tmp_path, "context-size", cfg, [
+        (0, 0, 0, [1, 2, 3]), (1, 1, 0, [4, 5, 6]),
+        (2, 2, 0, [4, 5, 7]), (3, 3, 0, [8]),
+    ])
+    rows = list(csv.DictReader(io.StringIO(trace.decode())))
+    assert [int(r["hash_id"]) for r in rows] == [6]
+
+
+@pytest.mark.parametrize("retention_ns", [None, 0, 5])
+def test_context_lru_single_candidate_matches_indexed_lifecycles(tmp_path, retention_ns):
+    cfg = replace(
+        configuration(7, 24),
+        memory_policy=MemoryPolicyConfig(kind="indexed_lru", retention_ns=retention_ns),
+    )
+    requests = list(workload())
+    expected = run(tmp_path, "indexed-cold", cfg, requests)
+    actual = run(tmp_path, "context-cold", replace(
+        cfg, memory_policy=replace(cfg.memory_policy, kind="context_lru", alpha=0.01),
+    ), requests)
+    assert actual[:2] == expected[:2]
+
+
+@pytest.mark.parametrize("alpha", [0, -0.1, 1.1, float("nan"), float("inf")])
+def test_context_lru_rejects_invalid_alpha(tmp_path, alpha):
+    cfg = replace(configuration(5, 32), memory_policy=MemoryPolicyConfig(
+        kind="context_lru", alpha=alpha,
+    ))
+    with pytest.raises(ValueError, match="alpha"):
+        DWPDSimulator(cfg, tmp_path / "invalid-alpha.csv")
+
+
+@pytest.mark.parametrize("options", [{"groups": 2}, {"sampled_groups": 1}, {"workers": 2}])
+def test_context_lru_requires_global_exact_index(tmp_path, options):
+    cfg = replace(configuration(5, 32), memory_policy=MemoryPolicyConfig(
+        kind="context_lru", **options,
+    ))
+    with pytest.raises(ValueError, match="context_lru requires"):
+        DWPDSimulator(cfg, tmp_path / "invalid-context-index.csv")

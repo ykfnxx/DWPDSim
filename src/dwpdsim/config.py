@@ -22,7 +22,7 @@ class StorageTierConfig:
 
 @dataclass(frozen=True, slots=True)
 class MemoryPolicyConfig:
-    """Memory LRU: original scan or indexed exact/sampled segment selection."""
+    """Memory LRU with scan, indexed, or context-aware segment selection."""
 
     kind: str = "baseline_lru"
     admit_storage_hits: bool = True
@@ -31,8 +31,10 @@ class MemoryPolicyConfig:
     workers: int = 1
     seed: int = 0
     profile: bool = False
-    # indexed_lru only: Drop if selected segment idle time is strictly greater.
+    # indexed_lru and context_lru: Drop if selected segment idle time is strictly greater.
     retention_ns: int | None = None
+    # context_lru only: fraction of Memory capacity covered by oldest candidates.
+    alpha: float = 0.01
 
 
 @dataclass(frozen=True, slots=True)

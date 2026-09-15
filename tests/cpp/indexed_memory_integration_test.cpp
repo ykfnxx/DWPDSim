@@ -59,6 +59,30 @@ void retention_preserves_hot_prefix(const std::filesystem::path& path) {
     assert(!sim.tree().contains(3) && !sim.tree().contains(4));
 }
 
+void context_lru_preserves_deep_context(const std::filesystem::path& path) {
+    SimulationConfig config;
+    config.block_size_bytes = 512;
+    config.memory.capacity_bytes = 4 * 512;
+    config.slc = {16 * 512, 1};
+    config.tlc = {16 * 512, 1};
+    Simulator sim(config, std::make_unique<ContextMemoryLruPolicy>(true, 4, 1.0, 0),
+                  std::make_unique<BaselineFixedLruStoragePolicy>(Placement{StorageTier::Tlc, 0}), path);
+    sim.process_request(0, 0, 0, std::vector<HashId>{1, 2, 3});
+    sim.process_request(1, 1, 0, std::vector<HashId>{4});
+    sim.process_request(2, 2, 0, std::vector<HashId>{5});
+    assert(!sim.tree().contains(4));
+    assert(sim.tree().node(1).in_memory && sim.tree().node(3).in_memory);
+    sim.process_request(3, 3, 0, std::vector<HashId>{1, 2, 3});
+    assert(sim.metrics().compute_cost == 11);
+    assert(sim.metrics().global_misses == 5);
+    sim.process_request(4, 4, 0, std::vector<HashId>{4});
+    assert(sim.metrics().compute_cost == 12);
+    assert(sim.metrics().memory_drop_blocks == 2);
+    assert(!sim.tree().contains(5));
+    sim.finish();
+    assert(sim.trace_event_count() == 0);
+}
+
 int main() {
     const auto directory = std::filesystem::temp_directory_path() / "dwpdsim-indexed-integration";
     std::filesystem::create_directories(directory);
@@ -71,5 +95,6 @@ int main() {
                == replay(directory / "parallel-sample.csv", 11, 3, 3, seed));
     }
     retention_preserves_hot_prefix(directory / "retention.csv");
+    context_lru_preserves_deep_context(directory / "context.csv");
     std::filesystem::remove_all(directory);
 }

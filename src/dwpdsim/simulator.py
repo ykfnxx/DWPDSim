@@ -56,6 +56,7 @@ class DWPDSimulator:
             memory_workers=memory.workers,
             memory_seed=memory.seed,
             memory_retention_ns=memory.retention_ns,
+            memory_alpha=memory.alpha,
             storage_policy=storage.kind,
             rr_victim_search=storage.rr_victim_search,
             rr_subtree_counts=storage.rr_subtree_counts,

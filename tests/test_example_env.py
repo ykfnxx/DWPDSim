@@ -94,3 +94,18 @@ def test_env_rr_options_reach_native_reclaim(monkeypatch, tmp_path, mode, counts
     assert work["decisions"] == work["verified_decisions"]
     assert work["decision_ns"] > 0
     assert bool(work["ancestor_updates"]) == (counts == "true")
+
+
+@pytest.mark.parametrize("alpha,evicted", [("0.01", 3), ("1", 1)])
+def test_env_context_alpha_reaches_native_eviction(monkeypatch, tmp_path, alpha, evicted):
+    configure(monkeypatch, tmp_path, "")
+    monkeypatch.setenv("DWPDSIM_MEMORY_POLICY", "context_lru")
+    monkeypatch.setenv("DWPDSIM_MEMORY_ALPHA", alpha)
+    monkeypatch.setenv("DWPDSIM_MEMORY_CAPACITY_BYTES", str(4 * 4096))
+    namespace = runpy.run_path(str(ROOT / "example/run_pipeline.py"))
+    config = namespace["simulation_config"]()
+    with DWPDSimulator(config, tmp_path / "context-env.csv") as sim:
+        sim.process(0, 0, 0, [1, 2, 3])
+        sim.process(1, 1, 0, [4])
+        sim.process(2, 2, 0, [5])
+        assert sim.stats()["memory"]["evicted_blocks"] == evicted

@@ -13,7 +13,7 @@ namespace dwpdsim {
 
 // Exact segment recency, with independently selectable grouping, sampling and workers.
 // Workers read only during evict(); all mutations remain on the simulator thread.
-class IndexedMemoryLruPolicy final : public MemoryPolicy {
+class IndexedMemoryLruPolicy : public MemoryPolicy {
   public:
     IndexedMemoryLruPolicy(bool admit_storage_hits, std::size_t groups,
                            std::size_t sampled_groups, std::size_t workers, std::uint64_t seed,
@@ -28,7 +28,8 @@ class IndexedMemoryLruPolicy final : public MemoryPolicy {
                         const RadixTree& tree) override;
     MemoryPolicyWork work() const override;
 
-  private:
+  protected:
+    virtual NodeId select_victim() const;
     using Key = std::pair<std::uint64_t, NodeId>;
     using Handle = std::uint64_t;
     struct Resident { std::uint64_t recency; Handle segment; };
@@ -38,6 +39,7 @@ class IndexedMemoryLruPolicy final : public MemoryPolicy {
         std::set<Key> members;
     };
     struct Result { std::optional<Key> best; std::uint64_t examined = 0; };
+  private:
     Handle ensure_segment(NodeId endpoint);
     void unpublish(Handle handle);
     void publish(Handle handle);
@@ -53,6 +55,7 @@ class IndexedMemoryLruPolicy final : public MemoryPolicy {
     std::size_t sampled_groups_;
     std::uint64_t seed_;
     std::optional<TimestampNs> retention_ns_;
+  protected:
     const RadixTree* tree_ = nullptr;
     std::uint64_t next_recency_ = 0;
     Handle next_handle_ = 0;
@@ -63,6 +66,7 @@ class IndexedMemoryLruPolicy final : public MemoryPolicy {
     std::vector<std::set<Key>> groups_;
     std::vector<NodeId> scratch_;
     mutable MemoryPolicyWork work_;
+  private:
     mutable std::uint64_t decision_ = 0;
     mutable std::vector<std::size_t> selected_groups_;
     std::vector<std::thread> threads_;

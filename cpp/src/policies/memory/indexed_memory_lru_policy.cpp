@@ -237,9 +237,7 @@ IndexedMemoryLruPolicy::Result IndexedMemoryLruPolicy::search_groups() const {
     return result;
 }
 
-MemoryEvictionDecision IndexedMemoryLruPolicy::evict(
-    const RequestContext& request, const RadixTree& tree
-) const {
+NodeId IndexedMemoryLruPolicy::select_victim() const {
     const std::size_t count = sampled_groups_ == 0 ? groups_.size() : sampled_groups_;
     const std::size_t start = mix(seed_ ^ decision_++) % groups_.size();
     selected_groups_.clear();
@@ -257,7 +255,13 @@ MemoryEvictionDecision IndexedMemoryLruPolicy::evict(
         work_.candidates_examined += result.examined;
     }
     assert(result.best.has_value());
-    const NodeId endpoint = result.best->second;
+    return result.best->second;
+}
+
+MemoryEvictionDecision IndexedMemoryLruPolicy::evict(
+    const RequestContext& request, const RadixTree& tree
+) const {
+    const NodeId endpoint = select_victim();
     auto action = MemoryEvictionAction::Dump;
     if (retention_ns_) {
         const auto& segment = segments_.at(endpoints_.at(endpoint));
