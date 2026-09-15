@@ -30,6 +30,19 @@ dev = [
   "ruff>=0.6",
 ]
 
+[dependency-groups]
+# Reuse the published extras for local development and Parquet input tests.
+dev = ["dwpdsim[dev,input]"]
+
+[tool.uv]
+# Native source edits must invalidate the editable extension build.
+cache-keys = [
+  { file = "pyproject.toml" },
+  { file = "CMakeLists.txt" },
+  { file = "cpp/**/*.cpp" },
+  { file = "cpp/**/*.hpp" },
+]
+
 [tool.scikit-build]
 wheel.packages = ["src/dwpdsim"]
 cmake.build-type = "Release"

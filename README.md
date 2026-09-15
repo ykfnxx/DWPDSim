@@ -36,6 +36,27 @@ ruff check .
 pytest
 ```
 
+### 使用 uv
+
+项目的 uv 配置位于 `pyproject.toml`，依赖版本记录在 `uv.lock`。
+默认 dev 依赖组复用 `dev` 和 `input` extras，包含测试、Ruff 和 Parquet 输入依赖。
+
+```bash
+uv sync --locked
+uv run --locked ruff check .
+uv run --locked pytest
+uv run --locked python example/run_pipeline.py
+```
+
+`uv sync` 在项目目录创建 `.venv` 并编译 C++ 扩展。C++ 源码、头文件和 CMake 配置已加入
+构建缓存键，修改后执行 `uv sync` 或 `uv run` 会重新检查构建；不要直接使用旧解释器运行测试。
+需要强制重建时执行 `uv sync --locked --reinstall-package dwpdsim`。
+
+只安装运行依赖使用 `uv sync --locked --no-dev`；需要 Hugging Face 数据源使用
+`uv sync --locked --extra hub`，后续 `uv run` 同样加 `--extra hub`。
+修改依赖声明后运行 `uv lock`，并一起提交 `pyproject.toml` 和 `uv.lock`。
+配置依据 [uv 官方文档](https://docs.astral.sh/uv/reference/settings/#cache-keys)。
+
 ## 基本用法
 
 ```python
