@@ -124,6 +124,7 @@ void Simulator::process_request(
 
     std::optional<NodeId> parent_id;
     bool prefix_hit = true;
+    const std::uint64_t misses_before = metrics_.global_misses;
     for (std::size_t position = 0; position < hash_count; ++position) {
         const auto [node_id, created] = parent_id.has_value()
                                             ? tree_.get_or_create(
@@ -154,6 +155,7 @@ void Simulator::process_request(
         metrics_.record_access(prefix_hit ? result : AccessResult::GlobalMiss);
         parent_id = node_id;
     }
+    metrics_.compute_cost += (metrics_.global_misses - misses_before) * hash_count;
 }
 
 void Simulator::process_request(

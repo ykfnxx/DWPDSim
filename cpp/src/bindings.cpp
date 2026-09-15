@@ -180,6 +180,7 @@ py::dict simulator_stats(const Simulator& simulator) {
     accesses["slc_hits"] = metrics.slc_hits;
     accesses["tlc_hits"] = metrics.tlc_hits;
     accesses["global_misses"] = metrics.global_misses;
+    accesses["compute_cost"] = metrics.compute_cost;
     accesses["memory_hit_rate"] = rate(metrics.memory_hits, metrics.block_access_count);
     accesses["storage_hit_rate"] = rate(storage_hits, memory_misses);
     accesses["total_hit_rate"] = rate(all_hits, metrics.block_access_count);

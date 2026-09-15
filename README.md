@@ -164,6 +164,9 @@ Memory Dump；relocation destination WRITE 只进入 program bytes。
 命中统计按每个请求在 DRAM 与 SLC/TLC 中的联合连续前缀计算：层级切换不打断命中，
 首次两处都不存在的 block 及其全部后缀均计入 `global_misses`，即使后缀仍有缓存副本。
 例如 A 在 Storage、B 在 DRAM、C 缺失、D 驻留时，该请求计 2 hit、2 miss。
+`accesses.compute_cost` 累计每个请求的 `miss block 数 × 完整 context block 数`，单位为
+block²；miss block 数沿用上述连续前缀口径。例如 100 blocks 的请求连续命中前 60 blocks，
+贡献 40 个 `global_misses` 和 4000 的 `compute_cost`。全命中或空请求贡献 0。
 `memory_hit_rate` 和 `total_hit_rate` 的分母为全部 block 访问数；`storage_hit_rate`
 为 `(slc_hits + tlc_hits) / (slc_hits + tlc_hits + global_misses)`，分母为未计作内存命中的访问数。
 该前缀规则用于访问命中统计；节点访问状态、缓存读写、提升与淘汰仍按逐 block 的实际驻留状态执行，

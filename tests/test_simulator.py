@@ -72,6 +72,7 @@ def test_baseline_dump_and_storage_hit_have_consistent_metrics(tmp_path):
         "slc_hits": 1,
         "tlc_hits": 0,
         "global_misses": 2,
+        "compute_cost": 2,
         "memory_hit_rate": 0.0,
         "storage_hit_rate": 1 / 3,
         "total_hit_rate": 1 / 3,
@@ -121,8 +122,22 @@ def test_prefix_hits_can_cross_storage_and_memory(tmp_path, tier):
     assert after[f"{tier}_hits"] - before[f"{tier}_hits"] == 1
     assert after["memory_hits"] - before["memory_hits"] == 1
     assert after["global_misses"] - before["global_misses"] == 2
+    assert before["compute_cost"] == 4
+    assert after["compute_cost"] == 12
     assert after["total_hit_rate"] == 2 / 6
     simulator.finish()
+
+
+def test_compute_cost_accumulates_per_request_context_length(tmp_path):
+    simulator = DWPDSimulator(config(memory_blocks=8), tmp_path / "compute-cost.csv")
+    simulator.process(0, 1, 0, [1, 2])  # 2 misses * 2 blocks
+    simulator.process(1, 2, 0, [1, 2, 3, 4, 5])  # 3 misses * 5 blocks
+    simulator.process(2, 3, 0, [1, 2, 3, 4, 5])  # Full hit
+    simulator.process(3, 4, 0, [])
+    simulator.finish()
+    accesses = simulator.stats()["accesses"]
+    assert accesses["global_misses"] == 5
+    assert accesses["compute_cost"] == 19
 
 
 def test_dump_admission_is_atomic_and_rejection_drops_memory_segment(tmp_path):

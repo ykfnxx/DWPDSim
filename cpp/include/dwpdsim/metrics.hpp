@@ -47,6 +47,7 @@ class MetricsCollector {
     std::uint64_t slc_hits = 0;
     std::uint64_t tlc_hits = 0;
     std::uint64_t global_misses = 0;
+    std::uint64_t compute_cost = 0;
 
     std::uint64_t storage_promotions = 0;
     std::uint64_t storage_bypasses = 0;

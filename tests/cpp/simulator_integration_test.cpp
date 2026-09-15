@@ -163,12 +163,14 @@ void storage_resident_suffix_after_a_gap_counts_as_misses() {
     assert(after.memory_hits - before.memory_hits == 2);
     assert(after.slc_hits == before.slc_hits);
     assert(after.global_misses - before.global_misses == 2);
+    assert(after.compute_cost - before.compute_cost == 8);
     // Statistics truncate the prefix; the resident suffix still follows normal I/O.
     assert(after.io[0].reads - before.io[0].reads == 1);
 
     process(simulator, 6, 7, {1, 2, 3, 4});
     assert(simulator.metrics().memory_hits - after.memory_hits == 4);
     assert(simulator.metrics().global_misses == after.global_misses);
+    assert(simulator.metrics().compute_cost == after.compute_cost);
     simulator.finish();
     std::filesystem::remove(trace);
 }
