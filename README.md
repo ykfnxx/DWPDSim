@@ -136,7 +136,8 @@ RR 默认使用精确 segment 索引，tier placement、stream 轮转、Storage 
 后台 migration 没有请求上下文，使用 segment endpoint 选择目标 stream。
 
 所有 storage 决策共用一个 policy state，并只通过 commit notification 更新。实现位于
-`cpp/include/dwpdsim/policies/` 和 `cpp/src/policies/`；Simulator 保持 RadixTree、StorageState
+`cpp/include/dwpdsim/policies/storage/` 和 `cpp/src/policies/storage/`；memory policy 的接口与实现
+分别位于 `cpp/include/dwpdsim/policies/memory/` 和 `cpp/src/policies/memory/`。Simulator 保持 RadixTree、StorageState
 和 LBA allocator 的唯一写权限。
 后台 tick、segment 展开和 `READ -> WRITE -> TRIM` 降低由 Simulator 统一执行；MQSim
 只模拟已决定的物理 I/O，不运行上述 policy。

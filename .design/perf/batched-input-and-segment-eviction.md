@@ -450,9 +450,9 @@ metrics 可以变化；这不表示本轮允许修改 StoragePolicy。
 | 连续 buffer 绑定 | [bindings.cpp](../../cpp/src/bindings.cpp) |
 | 节点与 segment 边界 | [radix_tree.cpp](../../cpp/src/radix_tree.cpp) |
 | 状态转换与剪枝 | [simulator.cpp](../../cpp/src/simulator.cpp) |
-| Memory 通知与决策接口 | [memory_policy.hpp](../../cpp/include/dwpdsim/policies/memory_policy.hpp) |
-| 原始 Memory LRU | [baseline_memory_lru_policy.cpp](../../cpp/src/policies/baseline_memory_lru_policy.cpp) |
-| 索引与并行 Memory LRU | [indexed_memory_lru_policy.cpp](../../cpp/src/policies/indexed_memory_lru_policy.cpp) |
+| Memory 通知与决策接口 | [memory_policy.hpp](../../cpp/include/dwpdsim/policies/memory/memory_policy.hpp) |
+| 原始 Memory LRU | [baseline_memory_lru_policy.cpp](../../cpp/src/policies/memory/baseline_memory_lru_policy.cpp) |
+| 索引与并行 Memory LRU | [indexed_memory_lru_policy.cpp](../../cpp/src/policies/memory/indexed_memory_lru_policy.cpp) |
 | 输入适配与队列 | [input.py](../../src/dwpdsim/input.py) |
 | 消融实验 | [memory_ablation.py](../../benchmark/memory_ablation.py) |
 

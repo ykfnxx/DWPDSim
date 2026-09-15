@@ -5,8 +5,8 @@
 #include <string>
 #include <unordered_map>
 
-#include "dwpdsim/policies/storage_policy.hpp"
-#include "dwpdsim/policies/storage_policy_state.hpp"
+#include "dwpdsim/policies/storage/storage_policy.hpp"
+#include "dwpdsim/policies/storage/storage_policy_state.hpp"
 
 namespace dwpdsim {
 

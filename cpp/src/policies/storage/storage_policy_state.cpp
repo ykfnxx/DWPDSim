@@ -1,4 +1,4 @@
-#include "dwpdsim/policies/storage_policy_state.hpp"
+#include "dwpdsim/policies/storage/storage_policy_state.hpp"
 
 #include <algorithm>
 #include <limits>

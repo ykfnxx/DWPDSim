@@ -7,7 +7,7 @@
 #include <unordered_map>
 #include <vector>
 
-#include "dwpdsim/policies/memory_policy.hpp"
+#include "dwpdsim/policies/memory/memory_policy.hpp"
 
 namespace dwpdsim {
 

@@ -14,15 +14,15 @@ add_library(
     dwpdsim_core
     STATIC
     cpp/src/metrics.cpp
-    cpp/src/policies/adaptive_endurance_storage_policy.cpp
-    cpp/src/policies/baseline_fixed_lru_storage_policy.cpp
-    cpp/src/policies/baseline_memory_lru_policy.cpp
-    cpp/src/policies/indexed_memory_lru_policy.cpp
-    cpp/src/policies/baseline_ratio_lru_storage_policy.cpp
-    cpp/src/policies/storage_policy.cpp
-    cpp/src/policies/storage_policy_state.cpp
-    cpp/src/policies/wear_share_affinity_storage_policy.cpp
-    cpp/src/policies/wear_share_round_robin_storage_policy.cpp
+    cpp/src/policies/memory/baseline_memory_lru_policy.cpp
+    cpp/src/policies/memory/indexed_memory_lru_policy.cpp
+    cpp/src/policies/storage/adaptive_endurance_storage_policy.cpp
+    cpp/src/policies/storage/baseline_fixed_lru_storage_policy.cpp
+    cpp/src/policies/storage/baseline_ratio_lru_storage_policy.cpp
+    cpp/src/policies/storage/storage_policy.cpp
+    cpp/src/policies/storage/storage_policy_state.cpp
+    cpp/src/policies/storage/wear_share_affinity_storage_policy.cpp
+    cpp/src/policies/storage/wear_share_round_robin_storage_policy.cpp
     cpp/src/radix_tree.cpp
     cpp/src/simulator.cpp
     cpp/src/storage.cpp

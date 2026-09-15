@@ -1,4 +1,4 @@
-#include "dwpdsim/policies/baseline_memory_lru_policy.hpp"
+#include "dwpdsim/policies/memory/baseline_memory_lru_policy.hpp"
 
 #include "dwpdsim/radix_tree.hpp"
 

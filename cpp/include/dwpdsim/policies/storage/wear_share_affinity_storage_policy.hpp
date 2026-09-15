@@ -1,13 +1,18 @@
 #pragma once
 
-#include "dwpdsim/policies/storage_policy.hpp"
-#include "dwpdsim/policies/storage_policy_state.hpp"
+#include "dwpdsim/policies/storage/storage_policy.hpp"
+#include "dwpdsim/policies/storage/storage_policy_state.hpp"
 
 namespace dwpdsim {
 
-class BaselineFixedLruStoragePolicy final : public StoragePolicy {
+struct WearShareAffinityPolicyConfig {
+    double slc_host_share = 0.68;
+    double logical_fill_fraction = 0.98;
+};
+
+class WearShareAffinityStoragePolicy final : public StoragePolicy {
   public:
-    explicit BaselineFixedLruStoragePolicy(Placement placement);
+    explicit WearShareAffinityStoragePolicy(WearShareAffinityPolicyConfig config);
 
     BackgroundSchedule background_schedule() const override;
     void on_request_begin(const RequestContext&, const StorageView&) override;
@@ -38,7 +43,16 @@ class BaselineFixedLruStoragePolicy final : public StoragePolicy {
     StoragePolicyStats stats(const StorageView& storage) const override;
 
   private:
-    Placement placement_;
+    static std::uint64_t stable_hash(std::uint64_t value);
+    StorageTier choose_tier(const DumpContext& dump) const;
+    std::uint32_t stream_for(
+        StorageTier tier,
+        AffinityId affinity_id,
+        NodeId segment_endpoint,
+        const StorageView& storage
+    ) const;
+
+    WearShareAffinityPolicyConfig config_;
     StoragePolicyState state_;
 };
 

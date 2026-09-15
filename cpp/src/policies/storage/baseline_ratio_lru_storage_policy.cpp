@@ -1,4 +1,4 @@
-#include "dwpdsim/policies/baseline_ratio_lru_storage_policy.hpp"
+#include "dwpdsim/policies/storage/baseline_ratio_lru_storage_policy.hpp"
 
 namespace dwpdsim {
 

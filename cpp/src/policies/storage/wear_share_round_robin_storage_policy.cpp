@@ -1,4 +1,4 @@
-#include "dwpdsim/policies/wear_share_round_robin_storage_policy.hpp"
+#include "dwpdsim/policies/storage/wear_share_round_robin_storage_policy.hpp"
 
 #include <algorithm>
 #include <cassert>

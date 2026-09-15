@@ -1,4 +1,4 @@
-#include "dwpdsim/policies/indexed_memory_lru_policy.hpp"
+#include "dwpdsim/policies/memory/indexed_memory_lru_policy.hpp"
 
 #include <algorithm>
 #include <cassert>

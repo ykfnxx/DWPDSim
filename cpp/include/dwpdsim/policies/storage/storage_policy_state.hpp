@@ -6,7 +6,7 @@
 #include <optional>
 #include <utility>
 
-#include "dwpdsim/policies/storage_policy.hpp"
+#include "dwpdsim/policies/storage/storage_policy.hpp"
 
 namespace dwpdsim {
 

@@ -1,4 +1,4 @@
-#include "dwpdsim/policies/adaptive_endurance_storage_policy.hpp"
+#include "dwpdsim/policies/storage/adaptive_endurance_storage_policy.hpp"
 
 #include <algorithm>
 #include <cmath>

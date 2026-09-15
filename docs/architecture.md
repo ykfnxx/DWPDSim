@@ -420,8 +420,8 @@ DWPDSim `storage.<tier>.host_write_bytes` 只统计 Memory Dump。MQSim pool `Ho
 | Simulator | `cpp/src/simulator.cpp` | 请求/tick 调度、状态变更、intent 执行、trace 和 metrics 协调 |
 | RadixTree | `cpp/src/radix_tree.cpp` | 全局拓扑、segment 解析、访问统计和节点生命周期 |
 | StorageState | `cpp/src/storage.cpp` | SLC/TLC 逻辑容量和 pool-local 地址分配 |
-| MemoryPolicy | `cpp/include/dwpdsim/policies/memory_policy.hpp` | DRAM admission、victim 和 Dump/Drop 接口 |
-| StoragePolicy | `cpp/include/dwpdsim/policies/storage_policy.hpp` | placement/reclaim/access/background/commit 接口 |
+| MemoryPolicy | `cpp/include/dwpdsim/policies/memory/memory_policy.hpp` | DRAM admission、victim 和 Dump/Drop 接口 |
+| StoragePolicy | `cpp/include/dwpdsim/policies/storage/storage_policy.hpp` | placement/reclaim/access/background/commit 接口 |
 | Policy 实现 | `cpp/src/policies/` | baseline、wear-share 和 adaptive-endurance 算法 |
 | TraceWriter | `cpp/src/trace_writer.cpp` | canonical schema v4 输出 |
 | MQSim converter | `src/dwpdsim/mqsim.py` | flow/workload 生成、MQSim 启动和结果解析 |

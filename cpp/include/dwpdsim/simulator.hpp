@@ -10,8 +10,8 @@
 
 #include "dwpdsim/config.hpp"
 #include "dwpdsim/metrics.hpp"
-#include "dwpdsim/policies/memory_policy.hpp"
-#include "dwpdsim/policies/storage_policy.hpp"
+#include "dwpdsim/policies/memory/memory_policy.hpp"
+#include "dwpdsim/policies/storage/storage_policy.hpp"
 #include "dwpdsim/radix_tree.hpp"
 #include "dwpdsim/storage.hpp"
 #include "dwpdsim/trace_writer.hpp"

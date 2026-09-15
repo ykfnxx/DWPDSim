@@ -1,4 +1,4 @@
-#include "dwpdsim/policies/baseline_fixed_lru_storage_policy.hpp"
+#include "dwpdsim/policies/storage/baseline_fixed_lru_storage_policy.hpp"
 
 namespace dwpdsim {
 

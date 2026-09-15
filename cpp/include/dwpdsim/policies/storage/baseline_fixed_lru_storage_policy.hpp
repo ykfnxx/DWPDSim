@@ -1,13 +1,13 @@
 #pragma once
 
-#include "dwpdsim/policies/storage_policy.hpp"
-#include "dwpdsim/policies/storage_policy_state.hpp"
+#include "dwpdsim/policies/storage/storage_policy.hpp"
+#include "dwpdsim/policies/storage/storage_policy_state.hpp"
 
 namespace dwpdsim {
 
-class BaselineRatioLruStoragePolicy final : public StoragePolicy {
+class BaselineFixedLruStoragePolicy final : public StoragePolicy {
   public:
-    explicit BaselineRatioLruStoragePolicy(double slc_write_ratio);
+    explicit BaselineFixedLruStoragePolicy(Placement placement);
 
     BackgroundSchedule background_schedule() const override;
     void on_request_begin(const RequestContext&, const StorageView&) override;
@@ -38,9 +38,7 @@ class BaselineRatioLruStoragePolicy final : public StoragePolicy {
     StoragePolicyStats stats(const StorageView& storage) const override;
 
   private:
-    std::uint32_t next_stream(StorageTier tier, const StorageView& storage) const;
-
-    double slc_write_ratio_;
+    Placement placement_;
     StoragePolicyState state_;
 };
 

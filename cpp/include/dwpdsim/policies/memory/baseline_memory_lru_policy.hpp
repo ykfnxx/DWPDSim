@@ -3,7 +3,7 @@
 #include <optional>
 #include <unordered_map>
 
-#include "dwpdsim/policies/memory_policy.hpp"
+#include "dwpdsim/policies/memory/memory_policy.hpp"
 
 namespace dwpdsim {
 

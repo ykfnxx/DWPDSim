@@ -1,4 +1,4 @@
-#include "dwpdsim/policies/wear_share_affinity_storage_policy.hpp"
+#include "dwpdsim/policies/storage/wear_share_affinity_storage_policy.hpp"
 
 namespace dwpdsim {
 
