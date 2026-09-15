@@ -12,13 +12,15 @@ from dwpdsim import DWPDSimulator, MemoryPolicyConfig, StoragePolicyConfig, Stor
     (kind, retention) for kind in ("indexed_lru", "context_lru") for retention in (None, 0, 5)
 ])
 @pytest.mark.parametrize("admit", [False, True])
-def test_infinite_matches_large_storage(tmp_path, kind, admit, retention):
+@pytest.mark.parametrize("cap", [None, 2])
+def test_infinite_matches_large_storage(tmp_path, kind, admit, retention, cap):
     cfg = replace(
         configuration(7, 4096),
         slc=StorageTierConfig(512, 1),
         tlc=StorageTierConfig(4096 * 512, 1),
         memory_policy=MemoryPolicyConfig(
             kind=kind, alpha=0.5, admit_storage_hits=admit, retention_ns=retention,
+            max_eviction_blocks=cap if kind == "context_lru" else None,
         ),
     )
     requests = list(workload(count=300))

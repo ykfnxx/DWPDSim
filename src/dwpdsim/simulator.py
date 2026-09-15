@@ -57,6 +57,10 @@ class DWPDSimulator:
             memory_seed=memory.seed,
             memory_retention_ns=memory.retention_ns,
             memory_alpha=memory.alpha,
+            memory_max_eviction_blocks=memory.max_eviction_blocks,
+            memory_retention_growth_seconds_per_block=memory.retention_growth_seconds_per_block,
+            memory_eviction_gap_reference_ns=memory.eviction_gap_reference_ns,
+            memory_eviction_base_blocks=memory.eviction_base_blocks,
             storage_policy=storage.kind,
             rr_victim_search=storage.rr_victim_search,
             rr_subtree_counts=storage.rr_subtree_counts,
@@ -149,6 +153,10 @@ class DWPDSimulator:
     def storage_performance(self) -> dict[str, int]:
         """RR query/maintenance counters; timers require rr_profile=True."""
         return self._core.storage_performance()
+
+    def enable_memory_diagnostics(self, path: str | PathLike[str]) -> None:
+        """Stream per-block evictions for offline diagnosis in infinite_storage mode."""
+        self._core.enable_memory_diagnostics(str(path))
 
     def memory_performance(self) -> dict[str, int]:
         """Experimental work counters; timings require MemoryPolicyConfig.profile."""

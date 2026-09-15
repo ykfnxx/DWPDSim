@@ -358,7 +358,11 @@ PYBIND11_MODULE(_core, module) {
                          bool rr_subtree_counts,
                          bool rr_verify_victims,
                          bool rr_profile,
-                         double memory_alpha
+                         double memory_alpha,
+                         std::optional<std::uint64_t> memory_max_eviction_blocks,
+                         double memory_retention_growth_seconds_per_block,
+                         std::optional<TimestampNs> memory_eviction_gap_reference_ns,
+                         std::uint64_t memory_eviction_base_blocks
                      ) {
                 if (slc_host_share <= 0.0 || slc_host_share >= 1.0) {
                     throw py::value_error("slc_host_share must be between 0 and 1");
@@ -368,6 +372,13 @@ PYBIND11_MODULE(_core, module) {
                 }
                 if (slc_erase_budget <= 0.0 || tlc_erase_budget <= 0.0) {
                     throw py::value_error("erase budgets must be positive");
+                }
+                if (memory_policy != "context_lru" &&
+                    (memory_retention_growth_seconds_per_block != 0 || memory_eviction_gap_reference_ns)) {
+                    throw py::value_error("adaptive memory parameters require context_lru");
+                }
+                if (memory_max_eviction_blocks && memory_policy != "context_lru") {
+                    throw py::value_error("max_eviction_blocks requires context_lru");
                 }
                 std::unique_ptr<MemoryPolicy> memory;
                 if (memory_policy == "baseline_lru") {
@@ -389,7 +400,9 @@ PYBIND11_MODULE(_core, module) {
                     }
                     memory = std::make_unique<ContextMemoryLruPolicy>(
                         admit_storage_hits, config.memory.capacity_bytes / config.block_size_bytes,
-                        memory_alpha, memory_retention_ns);
+                        memory_alpha, memory_retention_ns, memory_max_eviction_blocks,
+                        memory_retention_growth_seconds_per_block, memory_eviction_gap_reference_ns,
+                        memory_eviction_base_blocks);
                 } else {
                     throw py::value_error("memory policy must be 'baseline_lru', 'indexed_lru' or 'context_lru'");
                 }
@@ -463,7 +476,11 @@ PYBIND11_MODULE(_core, module) {
             py::arg("rr_subtree_counts") = false,
             py::arg("rr_verify_victims") = false,
             py::arg("rr_profile") = false,
-            py::arg("memory_alpha") = 0.01
+            py::arg("memory_alpha") = 0.01,
+            py::arg("memory_max_eviction_blocks") = py::none(),
+            py::arg("memory_retention_growth_seconds_per_block") = 0.0,
+            py::arg("memory_eviction_gap_reference_ns") = py::none(),
+            py::arg("memory_eviction_base_blocks") = 64
         )
         .def("storage_performance", [](const Simulator& simulator) {
             py::dict result;
@@ -480,6 +497,7 @@ PYBIND11_MODULE(_core, module) {
             result["ancestor_entries"] = work.ancestor_entries;
             return result;
         })
+        .def("enable_memory_diagnostics", &Simulator::enable_memory_diagnostics)
         .def("memory_performance", [](const Simulator& simulator) {
             py::dict result;
             const auto work = simulator.memory_policy_work();

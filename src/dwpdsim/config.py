@@ -35,6 +35,11 @@ class MemoryPolicyConfig:
     retention_ns: int | None = None
     # context_lru only: fraction of Memory capacity covered by oldest candidates.
     alpha: float = 0.01
+    # context_lru only: maximum resident blocks evicted from the selected segment tail.
+    max_eviction_blocks: int | None = None
+    retention_growth_seconds_per_block: float = 0.0
+    eviction_gap_reference_ns: int | None = None
+    eviction_base_blocks: int = 64
 
 
 @dataclass(frozen=True, slots=True)

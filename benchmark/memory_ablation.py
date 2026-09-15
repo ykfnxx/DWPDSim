@@ -101,6 +101,12 @@ def measure(args):
             profile=args.profile,
             alpha=args.alpha,
             retention_ns=args.retention_ns,
+            max_eviction_blocks=args.max_eviction_blocks if kind == "context_lru" else None,
+            retention_growth_seconds_per_block=(args.retention_growth_seconds_per_block
+                                                if kind == "context_lru" else 0),
+            eviction_gap_reference_ns=(args.eviction_gap_reference_ns
+                                       if kind == "context_lru" else None),
+            eviction_base_blocks=args.eviction_base_blocks,
         ),
         storage_policy=StoragePolicyConfig(kind=args.storage_policy),
     )
@@ -228,6 +234,12 @@ def suite(args):
             "--alpha",
             str(args.alpha),
         ]
+        command.extend(["--retention-growth-seconds-per-block", str(args.retention_growth_seconds_per_block),
+                        "--eviction-base-blocks", str(args.eviction_base_blocks)])
+        if args.eviction_gap_reference_ns is not None:
+            command.extend(["--eviction-gap-reference-ns", str(args.eviction_gap_reference_ns)])
+        if args.max_eviction_blocks is not None:
+            command.extend(["--max-eviction-blocks", str(args.max_eviction_blocks)])
         if args.retention_ns is not None:
             command.extend(["--retention-ns", str(args.retention_ns)])
         if args.profile:
@@ -293,6 +305,11 @@ def main():
                         default="baseline_fixed_lru")
     parser.add_argument("--alpha", type=float, default=0.01)
     parser.add_argument("--retention-ns", type=int)
+    parser.add_argument("--max-eviction-blocks", type=int,
+                        help="context_lru only: maximum resident blocks evicted per decision")
+    parser.add_argument("--retention-growth-seconds-per-block", type=float, default=0.0)
+    parser.add_argument("--eviction-gap-reference-ns", type=int)
+    parser.add_argument("--eviction-base-blocks", type=int, default=64)
     args = parser.parse_args()
     if args.measure:
         measure(args)

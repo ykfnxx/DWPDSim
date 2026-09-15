@@ -393,18 +393,47 @@ def test_context_lru_equal_depth_prefers_fewer_residents(tmp_path):
     assert [int(r["hash_id"]) for r in rows] == [6]
 
 
-@pytest.mark.parametrize("retention_ns", [None, 0, 5])
-def test_context_lru_single_candidate_matches_indexed_lifecycles(tmp_path, retention_ns):
-    cfg = replace(
-        configuration(7, 24),
-        memory_policy=MemoryPolicyConfig(kind="indexed_lru", retention_ns=retention_ns),
-    )
-    requests = list(workload())
-    expected = run(tmp_path, "indexed-cold", cfg, requests)
-    actual = run(tmp_path, "context-cold", replace(
-        cfg, memory_policy=replace(cfg.memory_policy, kind="context_lru", alpha=0.01),
-    ), requests)
-    assert actual[:2] == expected[:2]
+def test_context_lru_dump_stops_at_selected_segment(tmp_path):
+    cfg = replace(configuration(4, 32), memory_policy=MemoryPolicyConfig(
+        kind="context_lru", alpha=0.01,
+    ))
+    with DWPDSimulator(cfg, tmp_path / "current-segment.csv") as sim:
+        sim.process(0, 0, 0, [1, 2, 3, 4])
+        sim.process(1, 1, 0, [5])  # Persist the original path.
+        sim.process(2, 2, 0, [1, 2, 3, 4])  # Admit it back into Memory.
+        before = sim.stats()["memory"]["evicted_blocks"]
+        sim.process(3, 3, 0, [1, 2, 6])  # Split at 2 and evict the stored suffix [3, 4].
+        assert sim.stats()["memory"]["evicted_blocks"] - before == 2
+        assert sim.stats()["memory"]["resident_blocks"] == 3
+        hits = sim.stats()["accesses"]["memory_hits"]
+        sim.process(4, 4, 0, [1, 2])
+        assert sim.stats()["accesses"]["memory_hits"] - hits == 2
+
+
+@pytest.mark.parametrize("storage", ["baseline_fixed_lru", "infinite_storage",
+                                     "wear_share_round_robin", "wear_share_affinity",
+                                     "adaptive_endurance"])
+@pytest.mark.parametrize("retention", [None, 0])
+@pytest.mark.parametrize("cap,removed", [(1, 1), (2, 2), (8, 4), (None, 4)])
+def test_context_lru_caps_dump_and_drop_from_tail(tmp_path, storage, retention, cap, removed):
+    cfg = replace(configuration(4, 32),
+                  memory_policy=MemoryPolicyConfig(kind="context_lru", alpha=1,
+                                                  retention_ns=retention,
+                                                  max_eviction_blocks=cap),
+                  storage_policy=StoragePolicyConfig(kind=storage))
+    with DWPDSimulator(cfg, tmp_path / "capped.csv") as sim:
+        sim.process(0, 0, 0, [1, 2, 3, 4])
+        sim.process(1, 1, 0, [5])
+        stats = sim.stats()
+        assert stats["memory"]["evicted_blocks"] == removed
+        assert stats["memory"]["resident_blocks"] == 5 - removed
+        action = "drop_blocks" if retention == 0 else "dump_blocks"
+        assert stats["memory"][action] == removed
+        # The surviving prefix must still hit; the missing suffix counts as misses only for Drop.
+        sim.process(2, 2, 0, list(range(1, 5 - removed)))
+        assert sim.stats()["accesses"]["memory_hits"] == 4 - removed
+        sim.process(3, 3, 0, [1, 2, 3, 4])
+        assert sim.stats()["accesses"]["compute_cost"] == 17 + (4 * removed if retention == 0 else 0)
 
 
 @pytest.mark.parametrize("alpha", [0, -0.1, 1.1, float("nan"), float("inf")])

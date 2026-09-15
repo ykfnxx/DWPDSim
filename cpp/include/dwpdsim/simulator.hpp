@@ -3,6 +3,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
+#include <fstream>
 #include <memory>
 #include <optional>
 #include <unordered_set>
@@ -42,6 +43,7 @@ class Simulator {
         const std::vector<HashId>& hash_ids
     );
 
+    void enable_memory_diagnostics(const std::string& path);
     void finish();
     void finish(TimestampNs simulation_end_ns);
 
@@ -123,6 +125,7 @@ class Simulator {
     std::unique_ptr<StoragePolicy> storage_policy_;
     MetricsCollector metrics_;
     TraceWriter trace_writer_;
+    std::ofstream memory_diagnostics_;
     std::optional<TimestampNs> last_timestamp_ns_;
     std::optional<NodeId> active_node_id_;
     std::unordered_set<RequestId> request_ids_;

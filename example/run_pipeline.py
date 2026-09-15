@@ -87,6 +87,11 @@ def simulation_config() -> SimulationConfig:
             admit_storage_hits=boolean("DWPDSIM_ADMIT_STORAGE_HITS"),
             retention_ns=retention_ns,
             alpha=float(os.environ.get("DWPDSIM_MEMORY_ALPHA", "0.01")),
+            max_eviction_blocks=optional_int("DWPDSIM_MEMORY_MAX_EVICTION_BLOCKS"),
+            retention_growth_seconds_per_block=float(os.environ.get(
+                "DWPDSIM_MEMORY_RETENTION_GROWTH_SECONDS_PER_BLOCK", "0")),
+            eviction_gap_reference_ns=optional_int("DWPDSIM_MEMORY_EVICTION_GAP_REFERENCE_NS"),
+            eviction_base_blocks=int(os.environ.get("DWPDSIM_MEMORY_EVICTION_BASE_BLOCKS", "64")),
         ),
         storage_policy=StoragePolicyConfig(
             kind=required("DWPDSIM_STORAGE_POLICY"),

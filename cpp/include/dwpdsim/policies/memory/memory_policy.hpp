@@ -12,6 +12,8 @@ class RadixTree;
 struct MemoryEvictionDecision {
     NodeId leaf_segment_endpoint;
     MemoryEvictionAction action;
+    bool reclaim_parent = true;
+    std::optional<std::uint64_t> max_eviction_blocks;
 };
 
 enum class MemoryMutationKind : std::uint8_t {
@@ -39,6 +41,8 @@ struct MemoryPolicyWork {
 class MemoryPolicy {
   public:
     virtual ~MemoryPolicy() = default;
+    virtual void on_request_begin(const RequestContext&, const RadixTree&) {}
+    virtual void on_request_end(const RequestContext&, const RadixTree&) {}
     virtual void bind_tree(const RadixTree&) {}
     virtual void on_node_created(NodeId, const RadixTree&) {}
     virtual void on_node_pruned(NodeId, std::optional<NodeId>, const RadixTree&) {}

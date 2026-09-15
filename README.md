@@ -13,7 +13,7 @@ placement、淘汰与迁移。C++17 core 是逻辑状态、pool-local 地址、�
 - memory hit 不产生 I/O；
 - storage hit 产生 READ，MemoryPolicy 决定是否提升到内存；
 - global miss 代表计算出新 block，并加入内存，不产生 READ；
-- 内存按 segment LRU 选择 leaf segment；`Drop` 只剪枝该 leaf segment，`Dump` 才以 segment
+- `baseline_lru` / `indexed_lru` 按 segment LRU 选择 leaf segment；`Drop` 只剪枝该 leaf segment，`Dump` 才以 segment
   为单位向 parent 贪婪，已写盘 segment 释放内存后继续向上，在首个含未写盘 block 的 segment
   写盘并停止；
 - StoragePolicy 统一决定 Dump placement、同步 capacity reclaim、access migration 和后台维护；
@@ -288,7 +288,7 @@ Drop 只移除所选段的 Memory 副本，不向父段继续 Dump，不删除�
 `StoragePolicyConfig(kind="infinite_storage")` 使用轻量运行路径，Memory 淘汰产生的逻辑副本
 统一保存在无限 TLC，永不回收。它不创建 Storage policy，不维护 Storage LRU、迁移、地址和
 后台任务，不展开 Storage 命中的整段，也不创建 trace 文件。保留 Memory admission、段淘汰和
-Dump 向父段回收规则，以及逻辑读写计数。它不会在首次访问时提前把仍在 Memory 的 block 写盘。
+各 policy 的回收范围规则，以及逻辑读写计数。它不会在首次访问时提前把仍在 Memory 的 block 写盘。
 
 在 `example/.env` 中设置（模板为 `example/.env.example`）：
 
@@ -296,6 +296,7 @@ Dump 向父段回收规则，以及逻辑读写计数。它不会在首次访问
 DWPDSIM_STORAGE_POLICY=infinite_storage
 DWPDSIM_MEMORY_POLICY=context_lru
 DWPDSIM_MEMORY_ALPHA=0.01
+DWPDSIM_MEMORY_MAX_EVICTION_BLOCKS=64
 DWPDSIM_MEMORY_RETENTION_NS=
 DWPDSIM_ADMIT_STORAGE_HITS=true
 ```
@@ -347,7 +348,9 @@ retention 动作判断，使用单组全局精确候选选择：
 Python 配置：
 
 ```python
-memory_policy = MemoryPolicyConfig(kind="context_lru", alpha=0.01)
+memory_policy = MemoryPolicyConfig(
+    kind="context_lru", alpha=0.01, max_eviction_blocks=64,
+)
 ```
 
 使用配置文件时，修改 `example/.env`（完整模板为 `example/.env.example`）：
@@ -355,13 +358,81 @@ memory_policy = MemoryPolicyConfig(kind="context_lru", alpha=0.01)
 ```dotenv
 DWPDSIM_MEMORY_POLICY=context_lru
 DWPDSIM_MEMORY_ALPHA=0.01
+DWPDSIM_MEMORY_MAX_EVICTION_BLOCKS=64
 DWPDSIM_MEMORY_RETENTION_NS=
 ```
 
-alpha 仅影响 `context_lru`。排序控制起始 victim；`Dump` 仍可能继续向父段回收。
+`context_lru` 的 Drop 和 Dump 都只处理选中的当前 segment，不向父段回收。
+`max_eviction_blocks` 是两种动作共用的段内上限：从 endpoint 向段首选取最多 N 个 Memory
+驻留 block，保留其余前缀；提交仍按从前到后的顺序执行。Storage-only block 不占用上限。
+参数为正整数，默认 `None`（环境变量留空），表示回收当前段全部 Memory 驻留。
+即使上限未用满，也不继续到父段。Drop 丢弃所选 Memory 副本；Dump 仅写入其中没有 Storage
+副本的 block 后释放所选 Memory 副本。保留前缀不会因为本次部分淘汰被写盘或移除。
+
+该上限只影响 `context_lru`，并不改变 alpha 候选预算或深度/段长排序；候选段长仍按完整段的
+Memory 驻留数计算。`baseline_lru` / `indexed_lru` 保留原有整段和向父段 Dump 规则。
+实验脚本可加 `--max-eviction-blocks 64`，只传给 context 变体；index 对照组保持原规则。
+上限是每次淘汰决策的上限，一个长请求触发多次淘汰时，总淘汰量可以超过 N。
 endpoint 深度近似重算 context 长度，不等于未来请求的完整长度；Memory 淘汰也可能保留
 Storage 副本。策略效果需比较回放的 `accesses.compute_cost` 和 `accesses.global_misses`。
 候选选择顺序扫描冷段索引，并沿父链计算各候选深度；较大 alpha 会增加决策开销。
+
+实验结果与复现命令见[context_lru实验报告](docs/experiments/context-lru-retention.md)。
+
+### 自适应 retention 与淘汰粒度
+
+以下参数仅用于 `context_lru`，默认关闭自适应，保持固定 retention / 粒度行为：
+
+- `retention_growth_seconds_per_block`：非负系数 beta（秒/block），默认 0。
+  有效 retention = `retention_ns + beta × 1e9 × 上次完成请求的新增 block 数`。
+  使用非零 `affinity_id` 标识 session；新增长度为相邻请求 `max(0, N_current - N_previous)`。
+  首次请求和 context 缩短的新增量为 0；affinity=0 不跟踪 session 增长。
+  请求完成后才将新增量发布给本次触及且仍驻留 Memory 的 block；不会用当前未完成请求的增量
+  影响当前淘汰。共享 block 采用最近访问它的请求数据。
+- `eviction_gap_reference_ns`：正整数参考间隔，默认 `None` 关闭动态粒度。
+  开启后，选择段内最新 Memory 成员最近两次 Memory 访问所属的不同请求之间的时间间隔 G，
+  按 `floor(eviction_base_blocks × G / reference)` 计算粒度，限制在 `[1, max_eviction_blocks]`。
+  这里 G 是历史间隔，不是当前空闲时间；同请求内重复 hash 不更新 G。首次没有间隔时使用基础粒度。
+- `eviction_base_blocks`：动态模式的基础粒度，默认 64；动态模式仍要求显式设置正整数
+  `max_eviction_blocks` 作为硬上限。Drop/Dump 使用同一动态粒度，仍只处理当前段尾部。
+
+段的 retention 和粒度都由段内最近访问的 Memory block 对应的历史决定。
+新加入的 block 没有历史访问间隔，因此使用基础粒度，即使所属 session 已经有多次请求。
+block 被彻底剪枝时清除其历史；session 长度历史保留到本次模拟结束。
+
+组合配置示例：
+
+```dotenv
+DWPDSIM_MEMORY_RETENTION_NS=60000000000
+DWPDSIM_MEMORY_RETENTION_GROWTH_SECONDS_PER_BLOCK=1
+DWPDSIM_MEMORY_EVICTION_GAP_REFERENCE_NS=60000000000
+DWPDSIM_MEMORY_EVICTION_BASE_BLOCKS=64
+DWPDSIM_MEMORY_MAX_EVICTION_BLOCKS=1024
+```
+
+只调整 retention：将 gap reference 留空，max blocks 设为固定值（例如64）。
+只调整粒度：将增长系数设为0，retention 保持60000000000。
+
+三阶段 sweep（输入为下述四列 canonical Parquet）：
+
+```bash
+uv run python benchmark/context_adaptive_sweep.py \
+  --dataset build/trace-1-3-sweep/input.parquet \
+  --output build/context-adaptive-trace-1-3 \
+  --memory-blocks 16384 --retention-s 60 --alpha 0.01 \
+  --base-blocks 64 --max-blocks 1024 \
+  --betas 0,1,2,5 --gap-references-s 15,30,60,120,300 --jobs 6
+```
+
+脚本固定 8 MiB/block、infinite_storage、关闭回填，先跑 retention（固定粒度64），
+再跑粒度（固定 retention 60s），最后组合前两阶段各自命中率最高的两个非零 beta / reference。
+同时运行 retention 关闭的 baseline；输出每组配置和指标、`results.csv`、`report.md`
+及源码/输入校验信息 `provenance.json`。组合选择使用同一 trace，属于参数探索。
+
+扩大 retention / beta 范围时，传入 `--retentions-s 60,120,300`
+和 `--betas 0,5,10,20`。此模式运行完整交叉组合及 retention 关闭的 baseline，
+固定粒度为 `--base-blocks`，跳过动态粒度阶段；使用不同的 `--output` 保存结果。
+
 
 安装本地 Parquet 输入依赖：
 
@@ -412,3 +483,28 @@ python3 benchmark/memory_ablation.py --dataset input.parquet --output build/perf
 精确模式业务结果相同及近似模式可重复；每次计算哈希后删除大 trace，保留 JSON 结果。
 设计与实测结论见 [Memory 性能文档](.design/perf/batched-input-and-segment-eviction.md) 和
 [消融报告](.design/perf/memory-ablation-report.md)。
+
+### Memory Drop 诊断
+
+`infinite_storage` 模式下，在首次请求前调用
+`sim.enable_memory_diagnostics("evictions.csv")`，或给 sweep 添加 `--diagnostics`。
+日志每行是一块实际被淘汰的 Memory block，包含触发访问的全局序号、时间、hash ID 和动作：
+`D` 为 Drop，`W` 为本次实际写入，`C` 为已有存储副本而直接移除 Memory。
+关闭日志是默认行为；`finish()` 关闭文件。
+
+在输出目录保存 `selection.json`（待分析 job 对象列表，与 sweep 每组 JSON 的 `job` 一致），运行：
+
+```bash
+uv run python benchmark/memory_diagnosis.py \
+  --dataset build/context-adaptive-full/input.parquet \
+  --output build/context-diagnosis
+```
+
+分析需要对应的每组 JSON 和 `.evictions.csv`，输入 hash ID 应先映射为紧凑整数。
+输出 `diagnosis.json` 与每组 `.diagnosis.json`，包含 Drop 后再次访问比例及间隔分布、
+重复 Drop/写入次数，以及写入后未再访问的 block 数。下一次访问按全局访问序号查找，
+包含同一请求内的后续访问；没有未来访问仅指本 trace 结束前，没有外推至窗口之外。
+重复计数按 hash ID 跨剪枝/重建累计。
+
+“写入后未再访问”衡量实际淘汰轨迹中的潜在可避免写入，不是重新选择所有候选的
+全局最优策略，也不是部署策略的可实现收益。改变选择可能改变后续缓存状态。

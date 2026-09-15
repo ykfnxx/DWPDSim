@@ -136,3 +136,15 @@ def test_env_infinite_storage_skips_mqsim(monkeypatch, tmp_path):
     assert stats["accesses"]["tlc_hits"] > 0
     assert stats["trace"]["events"] == 0
     assert not (tmp_path / "output/simulation_trace.csv").exists()
+
+
+@pytest.mark.parametrize("limit,removed", [("", 2), ("1", 1)])
+def test_env_context_eviction_limit(monkeypatch, tmp_path, limit, removed):
+    configure(monkeypatch, tmp_path, "")
+    monkeypatch.setenv("DWPDSIM_MEMORY_POLICY", "context_lru")
+    monkeypatch.setenv("DWPDSIM_MEMORY_MAX_EVICTION_BLOCKS", limit)
+    config = runpy.run_path(str(ROOT / "example/run_pipeline.py"))["simulation_config"]()
+    with DWPDSimulator(config, tmp_path / "limited.csv") as sim:
+        sim.process(0, 0, 0, [1, 2])
+        sim.process(1, 1, 0, [3])
+        assert sim.stats()["memory"]["evicted_blocks"] == removed

@@ -124,6 +124,10 @@ void Simulator::process_request(
         span(protected_prefix_),
     };
     if (!config_.infinite_storage) { storage_policy_->on_request_begin(request, storage_view()); }
+    {
+        MemoryTimer timer(config_.profile_memory, memory_maintenance_ns);
+        memory_policy_->on_request_begin(request, tree_);
+    }
     metrics_.record_request(timestamp_ns);
     last_timestamp_ns_ = timestamp_ns;
 
@@ -161,6 +165,10 @@ void Simulator::process_request(
         parent_id = node_id;
     }
     metrics_.compute_cost += (metrics_.global_misses - misses_before) * hash_count;
+    {
+        MemoryTimer timer(config_.profile_memory, memory_maintenance_ns);
+        memory_policy_->on_request_end(request, tree_);
+    }
 }
 
 void Simulator::process_request(
@@ -176,6 +184,15 @@ void Simulator::process_request(
         hash_ids.data(),
         hash_ids.size()
     );
+}
+
+void Simulator::enable_memory_diagnostics(const std::string& path) {
+    if (!config_.infinite_storage || next_access_sequence_ != 0 || finished_) {
+        throw std::invalid_argument("memory diagnostics require infinite_storage before replay");
+    }
+    memory_diagnostics_.exceptions(std::ios::failbit | std::ios::badbit);
+    memory_diagnostics_.open(path);
+    memory_diagnostics_ << "sequence,timestamp_ns,node_id,action\n";
 }
 
 void Simulator::finish() {
@@ -194,6 +211,7 @@ void Simulator::finish(TimestampNs simulation_end_ns) {
     }
     run_until(simulation_end_ns);
     trace_writer_.finish();
+    if (memory_diagnostics_.is_open()) { memory_diagnostics_.close(); }
     finished_ = true;
 }
 
@@ -478,19 +496,22 @@ void Simulator::evict_from_memory(const AccessContext& context) {
             memory_segment_scratch_,
         };
         const std::optional<NodeId> parent_segment =
-            decision.action == MemoryEvictionAction::Dump
+            decision.action == MemoryEvictionAction::Dump && decision.reclaim_parent
                 ? tree_.parent(segment.segment_top)
                 : std::nullopt;
 
         memory_nodes.clear();
         write_nodes.clear();
-        for (NodeId node_id : segment.ordered_nodes) {
-            const Node& node = tree_.node(node_id);
-            if (!node.in_memory) {
-                continue;
-            }
-            memory_nodes.push_back(node_id);
-            if (!node.on_storage) {
+        // Select the deepest resident blocks; commit in top-to-endpoint order.
+        for (auto it = segment.ordered_nodes.rbegin(); it != segment.ordered_nodes.rend(); ++it) {
+            if (!tree_.node(*it).in_memory) { continue; }
+            memory_nodes.push_back(*it);
+            if (decision.max_eviction_blocks &&
+                memory_nodes.size() >= *decision.max_eviction_blocks) { break; }
+        }
+        std::reverse(memory_nodes.begin(), memory_nodes.end());
+        for (NodeId node_id : memory_nodes) {
+            if (!tree_.node(node_id).on_storage) {
                 write_nodes.push_back(node_id);
             } else {
                 ++metrics_.memory_evictions_with_storage_copy;
@@ -522,6 +543,13 @@ void Simulator::evict_from_memory(const AccessContext& context) {
 
         for (NodeId node_id : memory_nodes) {
             Node& victim = tree_.node(node_id);
+            if (memory_diagnostics_.is_open()) {
+                memory_diagnostics_ << context.access_sequence << ',' << context.request.timestamp_ns
+                    << ',' << node_id << ','
+                    << (decision.action == MemoryEvictionAction::Drop ? 'D' :
+                        (std::find(write_nodes.begin(), write_nodes.end(), node_id) != write_nodes.end() ? 'W' : 'C'))
+                    << '\n';
+            }
             metrics_.memory_removed(victim.on_storage);
             victim.in_memory = false;
             --memory_used_blocks_;

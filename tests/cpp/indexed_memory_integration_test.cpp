@@ -102,6 +102,30 @@ void infinite_storage_replays_without_trace(const std::filesystem::path& path) {
     assert(sim.trace_event_count() == 0 && !std::filesystem::exists(path));
 }
 
+void context_limit_preserves_prefix(const std::filesystem::path& path, bool drop) {
+    SimulationConfig config;
+    config.block_size_bytes = 512;
+    config.memory.capacity_bytes = 4 * 512;
+    config.infinite_storage = true;
+    const auto retention = drop ? std::optional<TimestampNs>{0} : std::nullopt;
+    Simulator sim(config, std::make_unique<ContextMemoryLruPolicy>(true, 4, 1.0, retention, 2),
+                  nullptr, path);
+    sim.process_request(0, 0, 0, std::vector<HashId>{1, 2, 3, 4});
+    sim.process_request(1, 1, 0, std::vector<HashId>{5});
+    assert(sim.metrics().memory_evicted_blocks == 2);
+    assert(sim.tree().node(1).in_memory && sim.tree().node(2).in_memory);
+    assert(!sim.tree().node(1).on_storage && !sim.tree().node(2).on_storage);
+    if (drop) {
+        assert(!sim.tree().contains(3) && !sim.tree().contains(4));
+    } else {
+        assert(!sim.tree().node(3).in_memory && sim.tree().node(3).on_storage);
+        assert(!sim.tree().node(4).in_memory && sim.tree().node(4).on_storage);
+    }
+    sim.process_request(2, 2, 0, std::vector<HashId>{1, 2, 3, 4});
+    assert(sim.metrics().global_misses == (drop ? 7 : 5));
+    sim.finish();
+}
+
 int main() {
     const auto directory = std::filesystem::temp_directory_path() / "dwpdsim-indexed-integration";
     std::filesystem::create_directories(directory);
@@ -116,5 +140,7 @@ int main() {
     retention_preserves_hot_prefix(directory / "retention.csv");
     context_lru_preserves_deep_context(directory / "context.csv");
     infinite_storage_replays_without_trace(directory / "infinite.csv");
+    context_limit_preserves_prefix(directory / "limit-dump.csv", false);
+    context_limit_preserves_prefix(directory / "limit-drop.csv", true);
     std::filesystem::remove_all(directory);
 }

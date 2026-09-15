@@ -224,7 +224,7 @@ MemoryPolicy 接口只有三个职责：
 `Drop` 只处理 policy 选中的 leaf segment：移除其中所有 DRAM-resident block，不产生 storage
 WRITE，然后停止。
 
-`Dump` 当前从选中的 leaf segment 开始向 parent segment 贪婪回收。对每个 segment 计算：
+`baseline_lru` / `indexed_lru` 的 `Dump` 从选中的 leaf segment 开始向 parent segment 贪婪回收。对每个 segment 计算：
 
 ```text
 memory_nodes = segment ∩ DRAM
@@ -426,3 +426,12 @@ DWPDSim `storage.<tier>.host_write_bytes` 只统计 Memory Dump。MQSim pool `Ho
 | TraceWriter | `cpp/src/trace_writer.cpp` | canonical schema v4 输出 |
 | MQSim converter | `src/dwpdsim/mqsim.py` | flow/workload 生成、MQSim 启动和结果解析 |
 | 完整示例 | `example/run_pipeline.py` | dotenv 驱动的 DWPDSim→MQSim pipeline |
+
+
+### context_lru 的段内回收
+
+`context_lru` 的决策禁止向父段继续回收，Drop 和 Dump 使用相同的选取范围。
+可选 `max_eviction_blocks` 限制一次决策移除的 Memory 驻留 block 数；Simulator 从当前段尾
+选择驻留 block，再按 top-to-endpoint 顺序提交。默认不限数量，但范围仍只有当前 segment。
+SegmentView 保留完整拓扑，`write_nodes` 只含实际选中且未写盘的 block，Storage placement
+按这些 block 申请容量。其余 Memory 成员保持驻留，索引通过逐 block 的 Removed 通知更新。
