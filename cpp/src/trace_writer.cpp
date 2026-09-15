@@ -52,9 +52,12 @@ void write_optional(std::ofstream& stream, const std::optional<T>& value) {
 
 TraceWriter::TraceWriter(
     const std::filesystem::path& path,
-    std::uint64_t block_size_bytes
+    std::uint64_t block_size_bytes,
+    bool enabled
 )
-    : block_size_bytes_(block_size_bytes), buffer_(1U << 20U) {
+    : enabled_(enabled), block_size_bytes_(block_size_bytes),
+      buffer_(enabled ? 1U << 20U : 0) {
+    if (!enabled_) { return; }
     stream_.rdbuf()->pubsetbuf(buffer_.data(), static_cast<std::streamsize>(buffer_.size()));
     stream_.open(path, std::ios::out | std::ios::trunc);
     if (!stream_) {
@@ -92,6 +95,7 @@ std::uint64_t TraceWriter::emit(
 }
 
 void TraceWriter::finish() {
+    if (!enabled_) { return; }
     stream_.flush();
     if (!stream_) {
         throw std::runtime_error("failed to flush trace file");

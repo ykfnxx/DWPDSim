@@ -41,6 +41,7 @@ VARIANTS = {
     "rows": ("baseline_lru", 1, 0, 1, False),
     "batch": ("baseline_lru", 1, 0, 1, False),
     "queue": ("baseline_lru", 1, 0, 1, True),
+    "context": ("context_lru", 1, 0, 1, False),
     "index": ("indexed_lru", 1, 0, 1, False),
     "groups": ("indexed_lru", 32, 0, 1, False),
     "workers": ("indexed_lru", 32, 0, 4, False),
@@ -98,8 +99,10 @@ def measure(args):
             workers=workers,
             seed=args.seed,
             profile=args.profile,
+            alpha=args.alpha,
+            retention_ns=args.retention_ns,
         ),
-        storage_policy=StoragePolicyConfig(kind="baseline_fixed_lru"),
+        storage_policy=StoragePolicyConfig(kind=args.storage_policy),
     )
     input_cfg = InputConfig(
         batch_requests=args.batch_requests, batch_hashes=262_144, prefetch=prefetch
@@ -165,11 +168,12 @@ def measure(args):
         / 1024,
         "peak_rss_source": "/proc/self/status VmHWM",
         "rusage_peak_rss_mib": resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024,
-        "trace_bytes": trace.stat().st_size,
-        "trace_sha256": digest(trace),
+        "trace_bytes": trace.stat().st_size if trace.exists() else 0,
+        "trace_sha256": digest(trace) if trace.exists() else None,
     }
     args.output.write_text(json.dumps(result, indent=2) + "\n")
-    trace.unlink()
+    if trace.exists():
+        trace.unlink()
 
 
 def suite(args):
@@ -219,7 +223,13 @@ def suite(args):
             str(args.batch_requests),
             "--seed",
             str(args.seed),
+            "--storage-policy",
+            args.storage_policy,
+            "--alpha",
+            str(args.alpha),
         ]
+        if args.retention_ns is not None:
+            command.extend(["--retention-ns", str(args.retention_ns)])
         if args.profile:
             command.append("--profile")
         subprocess.run(command, check=True)
@@ -242,9 +252,11 @@ def suite(args):
             "stats": entries[0]["stats"],
             "memory": entries[0]["memory"],
         }
+        if any(r["stats"] != entries[0]["stats"] for r in entries):
+            raise AssertionError(f"{variant} metrics are not deterministic")
         if len({r["trace_sha256"] for r in entries}) != 1:
             raise AssertionError(f"{variant} is not deterministic")
-    exact = [v for v in variants if not v.startswith("sample")]
+    exact = [v for v in variants if not v.startswith("sample") and v != "context"]
     if exact:
         reference = summary[exact[0]]
         for variant in exact:
@@ -277,6 +289,10 @@ def main():
     parser.add_argument("--variant", choices=VARIANTS, default="batch")
     parser.add_argument("--measure", action="store_true")
     parser.add_argument("--profile", action="store_true")
+    parser.add_argument("--storage-policy", choices=["baseline_fixed_lru", "infinite_storage"],
+                        default="baseline_fixed_lru")
+    parser.add_argument("--alpha", type=float, default=0.01)
+    parser.add_argument("--retention-ns", type=int)
     args = parser.parse_args()
     if args.measure:
         measure(args)

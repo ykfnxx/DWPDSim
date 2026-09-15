@@ -18,7 +18,8 @@ struct TraceContext {
 
 class TraceWriter {
   public:
-    TraceWriter(const std::filesystem::path& path, std::uint64_t block_size_bytes);
+    TraceWriter(const std::filesystem::path& path, std::uint64_t block_size_bytes,
+                bool enabled = true);
 
     std::uint64_t emit(
         const TraceContext& context,
@@ -35,6 +36,7 @@ class TraceWriter {
     std::uint64_t event_count() const noexcept;
 
   private:
+    bool enabled_;
     std::uint64_t block_size_bytes_;
     std::uint64_t next_sequence_ = 0;
     std::vector<char> buffer_;

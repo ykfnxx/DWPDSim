@@ -83,6 +83,25 @@ void context_lru_preserves_deep_context(const std::filesystem::path& path) {
     assert(sim.trace_event_count() == 0);
 }
 
+void infinite_storage_replays_without_trace(const std::filesystem::path& path) {
+    SimulationConfig config;
+    config.block_size_bytes = 512;
+    config.memory.capacity_bytes = 2 * 512;
+    config.infinite_storage = true;
+    Simulator sim(config, std::make_unique<ContextMemoryLruPolicy>(true, 2, 1.0),
+                  nullptr, path);
+    sim.process_request(0, 0, 1, std::vector<HashId>{1, 2});
+    sim.process_request(1, 1, 1, std::vector<HashId>{3});
+    sim.process_request(2, 2, 1, std::vector<HashId>{1, 2});
+    sim.finish();
+    assert(sim.metrics().global_misses == 3);
+    assert(sim.metrics().tlc_hits == 2);
+    assert(sim.metrics().io[1].reads == 2);
+    assert(sim.metrics().io[1].writes == 3);
+    assert(sim.storage().tier(StorageTier::Tlc).used_blocks() == 3);
+    assert(sim.trace_event_count() == 0 && !std::filesystem::exists(path));
+}
+
 int main() {
     const auto directory = std::filesystem::temp_directory_path() / "dwpdsim-indexed-integration";
     std::filesystem::create_directories(directory);
@@ -96,5 +115,6 @@ int main() {
     }
     retention_preserves_hot_prefix(directory / "retention.csv");
     context_lru_preserves_deep_context(directory / "context.csv");
+    infinite_storage_replays_without_trace(directory / "infinite.csv");
     std::filesystem::remove_all(directory);
 }

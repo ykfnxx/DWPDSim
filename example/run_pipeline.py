@@ -127,10 +127,15 @@ def main() -> None:
     metrics_path = output_dir / "simulation_metrics.json"
     mqsim_output_dir = output_dir / "mqsim"
 
-    simulator = DWPDSimulator(simulation_config(), trace_path)
+    config = simulation_config()
+    simulator = DWPDSimulator(config, trace_path)
     with simulator:
         simulator.run(read_requests(configured_path("DWPDSIM_REQUESTS_PATH")))
     simulator.write_stats(metrics_path)
+
+    if config.storage_policy.kind == "infinite_storage":
+        print(json.dumps({"metrics": str(metrics_path)}, indent=2))
+        return
 
     manifest = convert_trace(
         trace_path,

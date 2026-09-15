@@ -109,3 +109,30 @@ def test_env_context_alpha_reaches_native_eviction(monkeypatch, tmp_path, alpha,
         sim.process(1, 1, 0, [4])
         sim.process(2, 2, 0, [5])
         assert sim.stats()["memory"]["evicted_blocks"] == evicted
+
+
+def test_env_infinite_storage_skips_mqsim(monkeypatch, tmp_path):
+    import json
+
+    configure(monkeypatch, tmp_path, "")
+    monkeypatch.setenv("DWPDSIM_STORAGE_POLICY", "infinite_storage")
+    monkeypatch.setenv("DWPDSIM_OUTPUT_DIR", str(tmp_path / "output"))
+    requests = tmp_path / "requests.jsonl"
+    requests.write_text("\n".join(json.dumps({
+        "timestamp_ns": i, "request_id": i, "affinity_id": 1, "hash_ids": path,
+    }) for i, path in enumerate([[1, 2, 3], [4], [1, 2, 3]])))
+    monkeypatch.setenv("DWPDSIM_REQUESTS_PATH", str(requests))
+    namespace = runpy.run_path(str(ROOT / "example/run_pipeline.py"))
+    globals_ = namespace["main"].__globals__
+    monkeypatch.setitem(globals_, "ENV_PATH", tmp_path / ".env")
+
+    def unexpected(*args, **kwargs):
+        pytest.fail("infinite_storage must not run MQSim conversion or replay")
+
+    monkeypatch.setitem(globals_, "convert_trace", unexpected)
+    monkeypatch.setitem(globals_, "run_mqsim", unexpected)
+    namespace["main"]()
+    stats = json.loads((tmp_path / "output/simulation_metrics.json").read_text())
+    assert stats["accesses"]["tlc_hits"] > 0
+    assert stats["trace"]["events"] == 0
+    assert not (tmp_path / "output/simulation_trace.csv").exists()

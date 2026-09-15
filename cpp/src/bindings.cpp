@@ -57,6 +57,7 @@ std::unique_ptr<StoragePolicy> make_storage_policy(
     const WearShareAffinityPolicyConfig& affinity,
     const AdaptiveEndurancePolicyConfig& adaptive
 ) {
+    if (kind == "infinite_storage") { return nullptr; }
     if (kind == "baseline_fixed_lru") {
         const StorageTier tier = parse_storage_tier(fixed_tier);
         if (fixed_stream_id >= simulation.slc.stream_count && tier == StorageTier::Slc) {
@@ -86,7 +87,7 @@ std::unique_ptr<StoragePolicy> make_storage_policy(
     }
     throw py::value_error(
         "storage policy must be baseline_fixed_lru, baseline_ratio_lru, "
-        "wear_share_round_robin, wear_share_affinity, or adaptive_endurance"
+        "wear_share_round_robin, wear_share_affinity, adaptive_endurance, or infinite_storage"
     );
 }
 
@@ -129,6 +130,9 @@ py::dict storage_tier_metrics(
 
     py::dict result;
     result["capacity_bytes"] = config.capacity_bytes;
+    if (simulator.config().infinite_storage && tier == StorageTier::Tlc) {
+        result["capacity_bytes"] = py::none();
+    }
     result["stream_count"] = config.stream_count;
     result["live_bytes"] = metrics.storage_resident_blocks[index] * block_size;
     result["peak_live_bytes"] = metrics.peak_storage_resident_blocks[index] * block_size;
@@ -172,6 +176,10 @@ py::dict simulator_stats(const Simulator& simulator) {
     configuration["tlc_capacity_bytes"] = config.tlc.capacity_bytes;
     configuration["slc_stream_count"] = config.slc.stream_count;
     configuration["tlc_stream_count"] = config.tlc.stream_count;
+    if (config.infinite_storage) {
+        configuration["storage_mode"] = "infinite_storage";
+        configuration["tlc_capacity_bytes"] = py::none();
+    }
 
     py::dict accesses;
     accesses["requests"] = metrics.request_count;
@@ -409,6 +417,7 @@ PYBIND11_MODULE(_core, module) {
                     tlc_erase_budget,
                     background_period_ns,
                 };
+                config.infinite_storage = storage_policy == "infinite_storage";
                 auto storage = make_storage_policy(
                     storage_policy,
                     config,

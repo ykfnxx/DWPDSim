@@ -24,6 +24,7 @@ struct SimulationConfig {
     std::optional<TimestampNs> simulation_end_ns;
     std::uint64_t progress_interval_requests = 0;
     bool profile_memory = false;
+    bool infinite_storage = false;
 };
 
 }  // namespace dwpdsim

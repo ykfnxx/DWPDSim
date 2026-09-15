@@ -4,6 +4,7 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <stdexcept>
 #include <utility>
 
@@ -87,9 +88,11 @@ Simulator::Simulator(
       memory_policy_(std::move(memory_policy)),
       storage_policy_(std::move(storage_policy)),
       metrics_(config_),
-      trace_writer_(trace_path, config_.block_size_bytes) {
+      trace_writer_(trace_path, config_.block_size_bytes, !config_.infinite_storage) {
     memory_policy_->bind_tree(tree_);
-    next_background_tick_ns_ = storage_policy_->background_schedule().period_ns;
+    if (!config_.infinite_storage) {
+        next_background_tick_ns_ = storage_policy_->background_schedule().period_ns;
+    }
 }
 
 void Simulator::process_request(
@@ -110,7 +113,9 @@ void Simulator::process_request(
     }
 
     run_until(timestamp_ns);
-    collect_protected_prefix(hash_ids, hash_count, protected_prefix_);
+    if (!config_.infinite_storage) {
+        collect_protected_prefix(hash_ids, hash_count, protected_prefix_);
+    }
     const RequestContext request{
         timestamp_ns,
         request_id,
@@ -118,7 +123,7 @@ void Simulator::process_request(
         HashSpan{hash_ids, hash_count},
         span(protected_prefix_),
     };
-    storage_policy_->on_request_begin(request, storage_view());
+    if (!config_.infinite_storage) { storage_policy_->on_request_begin(request, storage_view()); }
     metrics_.record_request(timestamp_ns);
     last_timestamp_ns_ = timestamp_ns;
 
@@ -142,7 +147,7 @@ void Simulator::process_request(
                 MemoryTimer timer(config_.profile_memory, memory_maintenance_ns);
                 memory_policy_->on_node_created(node_id, tree_);
             }
-            storage_policy_->on_node_created(node_id, storage_view());
+            if (!config_.infinite_storage) { storage_policy_->on_node_created(node_id, storage_view()); }
         }
         const AccessResult result = process_access(AccessContext{
             request,
@@ -209,6 +214,11 @@ const StorageState& Simulator::storage() const noexcept {
 }
 
 StoragePolicyStats Simulator::storage_policy_stats() const {
+    if (config_.infinite_storage) {
+        StoragePolicyStats result;
+        result.tlc_program_bytes = metrics_.io[1].writes * config_.block_size_bytes;
+        return result;
+    }
     return storage_policy_->stats(storage_view());
 }
 
@@ -229,6 +239,12 @@ SimulationConfig Simulator::validate_config(SimulationConfig config) {
         config.memory.capacity_bytes % config.block_size_bytes != 0
     ) {
         throw std::invalid_argument("memory capacity must contain whole blocks");
+    }
+    if (config.infinite_storage) {
+        config.slc = {0, 1};
+        config.tlc = {std::numeric_limits<std::uint64_t>::max() /
+                          config.block_size_bytes * config.block_size_bytes, 1};
+        return config;
     }
     for (const StorageTierConfig* tier : {&config.slc, &config.tlc}) {
         if (
@@ -283,6 +299,7 @@ void Simulator::collect_protected_prefix(
 }
 
 void Simulator::run_until(TimestampNs target_ns) {
+    if (config_.infinite_storage) { return; }
     const TimestampNs period_ns = storage_policy_->background_schedule().period_ns;
     if (period_ns == 0) {
         return;
@@ -329,82 +346,86 @@ AccessResult Simulator::process_access(const AccessContext& context) {
                                                  : AccessResult::TlcHit;
         tree_.record_access(context.node_id, context.request.timestamp_ns, true);
 
-        const NodeId endpoint = tree_.segment_leaf_for(context.node_id);
-        const std::vector<NodeId> accessed_segment_nodes =
-            storage_view().resident_nodes(endpoint, source.tier);
-        notify_storage_commit(StorageMutation{
-            StorageMutationKind::StorageAccessCommitted,
-            context.request.timestamp_ns,
-            context.request.affinity_id,
-            endpoint,
-            span(accessed_segment_nodes),
-            Placement{source.tier, source.stream_id},
-            source.tier,
-            0,
-        });
+        if (config_.infinite_storage) {
+            metrics_.record_io(Operation::Read, StorageTier::Tlc, 0);
+        } else {
+            const NodeId endpoint = tree_.segment_leaf_for(context.node_id);
+            const std::vector<NodeId> accessed_segment_nodes =
+                storage_view().resident_nodes(endpoint, source.tier);
+            notify_storage_commit(StorageMutation{
+                StorageMutationKind::StorageAccessCommitted,
+                context.request.timestamp_ns,
+                context.request.affinity_id,
+                endpoint,
+                span(accessed_segment_nodes),
+                Placement{source.tier, source.stream_id},
+                source.tier,
+                0,
+            });
 
-        const auto action = storage_policy_->on_storage_access(
-            StorageAccessContext{context, source},
-            storage_view()
-        );
-        bool relocated = false;
-        if (action.has_value() && std::holds_alternative<RelocateIntent>(*action)) {
-            const RelocateIntent& intent = std::get<RelocateIntent>(*action);
-            std::vector<NodeId> protected_nodes(
-                context.request.protected_prefix.begin(),
-                context.request.protected_prefix.end()
+            const auto action = storage_policy_->on_storage_access(
+                StorageAccessContext{context, source},
+                storage_view()
             );
-            const SegmentView source_segment = storage_view().resolve_segment(
-                intent.source_segment_endpoint
-            );
-            protected_nodes.insert(
-                protected_nodes.end(),
-                source_segment.ordered_nodes.begin(),
-                source_segment.ordered_nodes.end()
-            );
-            const std::uint64_t source_blocks = storage_view().resident_blocks(
-                intent.source_segment_endpoint,
-                source.tier
-            );
-            if (ensure_capacity(
-                    intent.destination.tier,
-                    source_blocks,
-                    CapacityCause::AccessMigration,
-                    protected_nodes,
-                    trace_context(context)
-                )) {
-                const MoveId move_id = next_move_id_++;
-                const std::uint64_t read_sequence = trace_writer_.emit(
+            bool relocated = false;
+            if (action.has_value() && std::holds_alternative<RelocateIntent>(*action)) {
+                const RelocateIntent& intent = std::get<RelocateIntent>(*action);
+                std::vector<NodeId> protected_nodes(
+                    context.request.protected_prefix.begin(),
+                    context.request.protected_prefix.end()
+                );
+                const SegmentView source_segment = storage_view().resolve_segment(
+                    intent.source_segment_endpoint
+                );
+                protected_nodes.insert(
+                    protected_nodes.end(),
+                    source_segment.ordered_nodes.begin(),
+                    source_segment.ordered_nodes.end()
+                );
+                const std::uint64_t source_blocks = storage_view().resident_blocks(
+                    intent.source_segment_endpoint,
+                    source.tier
+                );
+                if (ensure_capacity(
+                        intent.destination.tier,
+                        source_blocks,
+                        CapacityCause::AccessMigration,
+                        protected_nodes,
+                        trace_context(context)
+                    )) {
+                    const MoveId move_id = next_move_id_++;
+                    const std::uint64_t read_sequence = trace_writer_.emit(
+                        trace_context(context),
+                        context.node_id,
+                        Operation::Read,
+                        node,
+                        source,
+                        TraceReason::StorageHit,
+                        move_id
+                    );
+                    metrics_.record_io(Operation::Read, source.tier, source.stream_id);
+                    relocated = execute_relocation(
+                        intent,
+                        protected_nodes,
+                        trace_context(context),
+                        context.node_id,
+                        read_sequence,
+                        true,
+                        move_id
+                    );
+                }
+            }
+            if (!relocated) {
+                trace_writer_.emit(
                     trace_context(context),
                     context.node_id,
                     Operation::Read,
                     node,
                     source,
-                    TraceReason::StorageHit,
-                    move_id
+                    TraceReason::StorageHit
                 );
                 metrics_.record_io(Operation::Read, source.tier, source.stream_id);
-                relocated = execute_relocation(
-                    intent,
-                    protected_nodes,
-                    trace_context(context),
-                    context.node_id,
-                    read_sequence,
-                    true,
-                    move_id
-                );
             }
-        }
-        if (!relocated) {
-            trace_writer_.emit(
-                trace_context(context),
-                context.node_id,
-                Operation::Read,
-                node,
-                source,
-                TraceReason::StorageHit
-            );
-            metrics_.record_io(Operation::Read, source.tier, source.stream_id);
         }
 
         if (memory_policy_->admit_storage_hit(context, node, tree_)) {
@@ -524,6 +545,18 @@ bool Simulator::dump_segment(
     ++metrics_.dump_requests;
     const std::uint64_t write_blocks = write_nodes.size();
     const std::uint64_t write_bytes = write_blocks * config_.block_size_bytes;
+    if (config_.infinite_storage) {
+        for (NodeId id : write_nodes) {
+            Node& node = tree_.node(id);
+            node.set_storage_location({StorageTier::Tlc, 0, 0});
+            storage_.tier(StorageTier::Tlc).record_unaddressed_write();
+            metrics_.storage_written(StorageTier::Tlc, node.in_memory);
+            metrics_.record_io(Operation::Write, StorageTier::Tlc, 0, true);
+        }
+        add_counts(metrics_.dumps_admitted, write_blocks, config_.block_size_bytes);
+        add_counts(metrics_.placements[1], write_blocks, config_.block_size_bytes);
+        return true;
+    }
     std::vector<NodeId> protected_nodes(
         context.request.protected_prefix.begin(),
         context.request.protected_prefix.end()
@@ -942,7 +975,9 @@ void Simulator::prune_from(NodeId node_id) {
             MemoryTimer timer(config_.profile_memory, memory_maintenance_ns);
             memory_policy_->on_node_pruned(removed_id, parent_id, tree_);
         }
-        storage_policy_->on_node_pruned(removed_id, parent_id, storage_view());
+        if (!config_.infinite_storage) {
+            storage_policy_->on_node_pruned(removed_id, parent_id, storage_view());
+        }
         ++metrics_.tree_nodes_removed;
         const std::vector<NodeId> removed{removed_id};
         notify_storage_commit(StorageMutation{
@@ -961,6 +996,7 @@ void Simulator::prune_from(NodeId node_id) {
 }
 
 void Simulator::notify_storage_commit(const StorageMutation& mutation) {
+    if (config_.infinite_storage) { return; }
     if (mutation.kind == StorageMutationKind::DumpWriteCommitted ||
         mutation.kind == StorageMutationKind::StorageAccessCommitted) {
         for (NodeId node_id : mutation.nodes) {

@@ -39,7 +39,7 @@ class MemoryPolicyConfig:
 
 @dataclass(frozen=True, slots=True)
 class StoragePolicyConfig:
-    """One complete storage placement, reclaim, and maintenance policy."""
+    """Storage policy, or infinite_storage for metrics-only Memory experiments."""
 
     kind: str = "baseline_fixed_lru"
     fixed_tier: str = "tlc"

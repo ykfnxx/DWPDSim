@@ -283,6 +283,52 @@ Drop 只移除所选段的 Memory 副本，不向父段继续 Dump，不删除�
 启用后会改变写入量及命中结果，原有精确模式等价性与消融结果仅适用于关闭此参数时。
 
 
+### 无限 Storage 的 Memory 实验模式
+
+`StoragePolicyConfig(kind="infinite_storage")` 使用轻量运行路径，Memory 淘汰产生的逻辑副本
+统一保存在无限 TLC，永不回收。它不创建 Storage policy，不维护 Storage LRU、迁移、地址和
+后台任务，不展开 Storage 命中的整段，也不创建 trace 文件。保留 Memory admission、段淘汰和
+Dump 向父段回收规则，以及逻辑读写计数。它不会在首次访问时提前把仍在 Memory 的 block 写盘。
+
+在 `example/.env` 中设置（模板为 `example/.env.example`）：
+
+```dotenv
+DWPDSIM_STORAGE_POLICY=infinite_storage
+DWPDSIM_MEMORY_POLICY=context_lru
+DWPDSIM_MEMORY_ALPHA=0.01
+DWPDSIM_MEMORY_RETENTION_NS=
+DWPDSIM_ADMIT_STORAGE_HITS=true
+```
+
+然后运行 `uv run --locked python example/run_pipeline.py`。输出为
+`build/example-pipeline/simulation_metrics.json`（或配置的输出目录），入口自动跳过 MQSim。
+SLC/TLC 容量和 stream 配置在该模式下忽略；Python API 可传入 `StorageTierConfig(0, 0)`。
+`trace_path` 参数仍接受路径但不会创建或覆盖文件，已有同名 trace 不代表本次输出。
+结果中 `configuration.storage_mode="infinite_storage"`，TLC 容量为 `null`，`trace.events=0`。
+`storage.tlc.reads/writes` 是逻辑 I/O，不是生成的 MQSim trace 或设备时间。
+
+比较同一数据上的 LRU 与 context LRU：
+
+```bash
+uv run --locked python benchmark/memory_ablation.py \
+  --dataset input.parquet --output build/memory-effect/alpha-001 \
+  --variants index,context --storage-policy infinite_storage \
+  --memory-blocks 4096 --alpha 0.01 --repeats 3
+```
+
+输入须包含 `timestamp_ns, request_id, affinity_id, hash_ids` 四列，按时间顺序排列。
+各次实验固定输入、Memory 容量和 admission，仅改变 alpha，并使用不同输出目录。
+`summary.json` 中每个变体的 `stats.accesses.memory_hit_rate` 表示连续前缀口径的 Memory 命中率；
+`stats.storage.tlc.reads.blocks` 表示实际读盘 block 数，两者应同时比较。
+还可查看 `stats.memory.evicted_blocks`、`stats.accesses.global_misses` 和 `compute_cost`。
+`--profile` 可额外测量策略维护及决策时间，耗时对比时所有变体使用相同设置。
+
+要验证“全部能存住”的条件，保持 retention 关闭；启用 retention 后仍会按 Memory policy 执行
+Drop，未写盘的 block 可能丢失。无限模式并不覆盖这个决定。正常无 Drop 时，已见数据不会消失，
+策略间的 global miss 与 compute cost 应相同。首次访问依旧是冷 miss，不代表 Storage 预热。
+适合用不同长度、有重复访问的输入验证命中效果；脚本默认等长合成数据主要用于运行性能检查。
+无限模式仍保留所有已写盘节点，进程内存会随唯一 block 数增长。
+
 ### Context-aware Memory LRU
 
 `context_lru` 复用 indexed LRU 的 segment 索引、拓扑更新、storage-hit admission 和
