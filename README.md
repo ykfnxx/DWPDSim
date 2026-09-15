@@ -377,7 +377,7 @@ endpoint 深度近似重算 context 长度，不等于未来请求的完整长�
 Storage 副本。策略效果需比较回放的 `accesses.compute_cost` 和 `accesses.global_misses`。
 候选选择顺序扫描冷段索引，并沿父链计算各候选深度；较大 alpha 会增加决策开销。
 
-实验结果与复现命令见[context_lru实验报告](docs/experiments/context-lru-retention.md)。
+实验结果与复现命令见[context_lru实验报告](report/context-lru-retention.md)。
 
 ### 自适应 retention 与淘汰粒度
 
