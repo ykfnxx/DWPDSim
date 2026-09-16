@@ -52,6 +52,7 @@ class Simulator {
     const RadixTree& tree() const noexcept;
     const StorageState& storage() const noexcept;
     StoragePolicyStats storage_policy_stats() const;
+    const ShadowFtl* shadow() const { return shadow_.get(); }
     StoragePolicyWork storage_policy_work() const { return config_.infinite_storage ? StoragePolicyWork{} : storage_policy_->work(); }
     MemoryPolicyWork memory_policy_work() const { return memory_policy_->work(); }
     std::uint64_t memory_decision_ns = 0;
@@ -75,6 +76,10 @@ class Simulator {
         std::vector<NodeId>& protected_prefix
     ) const;
     void run_until(TimestampNs target_ns);
+    void close_feedback_window(TimestampNs timestamp_ns);
+    std::uint64_t emit_io(const TraceContext&, NodeId, Operation, const Node&,
+        const StorageLocation&, TraceReason, std::optional<MoveId> = std::nullopt,
+        std::optional<std::uint64_t> = std::nullopt);
     void drain_background_tick(TimestampNs timestamp_ns);
     AccessResult process_access(const AccessContext& context);
     void notify_memory_commit(const MemoryMutation& mutation);
@@ -126,6 +131,9 @@ class Simulator {
     MetricsCollector metrics_;
     TraceWriter trace_writer_;
     std::ofstream memory_diagnostics_;
+    std::unique_ptr<ShadowFtl> shadow_;
+    std::ofstream controller_windows_;
+    TimestampNs feedback_period_ns_ = 0, next_feedback_ns_ = 0;
     std::optional<TimestampNs> last_timestamp_ns_;
     std::optional<NodeId> active_node_id_;
     std::unordered_set<RequestId> request_ids_;

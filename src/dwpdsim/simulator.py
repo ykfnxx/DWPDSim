@@ -80,8 +80,18 @@ class DWPDSimulator:
             slc_erase_budget=storage.slc_erase_budget,
             tlc_erase_budget=storage.tlc_erase_budget,
             background_period_ns=storage.background_period_ns,
-            slc_wa=storage.slc_wa,
-            tlc_wa=storage.tlc_wa,
+            online_tuning=storage.online_tuning,
+            feedback_period_ns=storage.feedback_period_ns,
+            shadow_page_bytes=storage.shadow_page_bytes,
+            shadow_pages_per_block=storage.shadow_pages_per_block,
+            shadow_overprovisioning=storage.shadow_overprovisioning,
+            shadow_slc_nominal_bytes=storage.shadow_slc_nominal_bytes,
+            shadow_tlc_nominal_bytes=storage.shadow_tlc_nominal_bytes,
+            reuse_loss_budget=storage.reuse_loss_budget,
+            min_reuse_blocks=storage.min_reuse_blocks,
+            reuse_ema_scale_blocks=storage.reuse_ema_scale_blocks,
+            shadow_slc_physical_blocks=storage.shadow_slc_physical_blocks,
+            shadow_tlc_physical_blocks=storage.shadow_tlc_physical_blocks,
         )
         self._processed_requests = 0
         self._next_progress_request = config.progress_interval_requests

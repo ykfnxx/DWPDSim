@@ -7,6 +7,7 @@
 
 #include "dwpdsim/radix_tree.hpp"
 #include "dwpdsim/storage.hpp"
+#include "dwpdsim/shadow_ftl.hpp"
 #include "dwpdsim/types.hpp"
 
 namespace dwpdsim {
@@ -119,10 +120,13 @@ struct StorageMutation {
 struct WearBalanceStats {
     double slc_wa;
     double tlc_wa;
-    double estimated_slc_pressure;
-    double estimated_tlc_pressure;
+    double shadow_slc_pressure;
+    double shadow_tlc_pressure;
     double target_tlc_share;
     double effective_promotion_seconds;
+    double learned_idle_multiplier;
+    double reuse_retention_ema;
+    std::uint64_t feedback_windows;
 };
 
 struct StoragePolicyStats {
@@ -155,6 +159,8 @@ class StoragePolicy {
     virtual void on_node_pruned(NodeId, std::optional<NodeId>, const StorageView&) {}
     virtual StoragePolicyWork work() const { return {}; }
 
+    virtual std::optional<ShadowConfig> shadow_config() const { return std::nullopt; }
+    virtual void on_shadow_feedback(const ShadowFeedback&, const StorageView&) {}
     virtual BackgroundSchedule background_schedule() const = 0;
     virtual void on_request_begin(
         const RequestContext& request,

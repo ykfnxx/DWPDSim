@@ -3,7 +3,6 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
-#include <stdexcept>
 
 namespace dwpdsim {
 namespace {
@@ -98,11 +97,51 @@ void WearBalancedStoragePolicy::GapEstimator::recompute() {
 WearBalancedStoragePolicy::WearBalancedStoragePolicy(
     WearBalancedPolicyConfig config
 )
-    : config_(config) {
-    if (!std::isfinite(config.slc_wa) || config.slc_wa < 1.0 ||
-        !std::isfinite(config.tlc_wa) || config.tlc_wa < 1.0) {
-        throw std::invalid_argument("wear_balanced WA must be finite and at least 1");
+    : config_(config), learned_idle_multiplier_(config.shadow.online_tuning ? 24.0 : config.idle_multiplier) {}
+
+std::optional<ShadowConfig> WearBalancedStoragePolicy::shadow_config() const {
+    auto result = config_.shadow;
+    result.slc_endurance = config_.slc_erase_budget;
+    result.tlc_endurance = config_.tlc_erase_budget;
+    return result;
+}
+
+void WearBalancedStoragePolicy::on_shadow_feedback(
+    const ShadowFeedback& feedback, const StorageView& storage
+) {
+    ++feedback_windows_;
+    for (std::size_t i = 0; i < 2; ++i) {
+        wa_[i] = feedback.pools[i].wa_ema;
+        pressure_[i] = feedback.pools[i].lifetime_pressure;
     }
+    if (!config_.shadow.online_tuning) { return; }
+    const auto samples = feedback.hit_blocks + feedback.ghost_miss_blocks;
+    // A sparse window is not evidence for adjustment or a consecutive violation.
+    if (samples < config_.shadow.min_reuse_blocks) {
+        violation_streak_ = headroom_streak_ = 0;
+        return;
+    }
+    const double reuse = static_cast<double>(feedback.hit_blocks) / samples;
+    const double alpha = std::min(0.20, static_cast<double>(samples) /
+        (static_cast<double>(samples) + config_.shadow.reuse_ema_scale_blocks));
+    reuse_ema_ = (1 - alpha) * reuse_ema_ + alpha * reuse;
+    const double floor = std::min(0.9999, 1 - config_.shadow.reuse_loss_budget + 0.003);
+    const double error = floor - reuse_ema_;
+    if (error > 0) { ++violation_streak_; headroom_streak_ = 0; }
+    else if (reuse_ema_ > floor + 0.002) { ++headroom_streak_; violation_streak_ = 0; }
+    else { violation_streak_ = headroom_streak_ = 0; }
+    const double utilization = std::max(
+        live_bytes(StorageTier::Slc, storage) / capacity_bytes(StorageTier::Slc, storage),
+        live_bytes(StorageTier::Tlc, storage) / capacity_bytes(StorageTier::Tlc, storage));
+    const bool stress = utilization >= 0.92 ||
+        (std::max(wa_[0], wa_[1]) >= 1.5 && std::max(pressure_[0], pressure_[1]) >= 0.5);
+    double step = 0;
+    if (feedback_windows_ > 4) {
+        if (stress && violation_streak_ >= 8) { step = -0.03; }
+        else if (violation_streak_ >= 3) { step = std::min(0.02, error); }
+        else if (headroom_streak_ >= 3) { step = -0.02; }
+    }
+    learned_idle_multiplier_ = std::clamp(learned_idle_multiplier_ * std::exp(step), 24.0, 64.0);
 }
 
 BackgroundSchedule WearBalancedStoragePolicy::background_schedule() const {
@@ -185,7 +224,7 @@ std::optional<MaintenanceAction> WearBalancedStoragePolicy::next_background_acti
         }
     }
 
-    const double promotion_age = effective_promotion_seconds(storage);
+    const double promotion_age = effective_promotion_seconds();
     auto promotion = state_.oldest_segment(StorageTier::Slc, storage);
     if (promotion.has_value() &&
         now - seconds(promotion->timestamp_ns) < promotion_age) {
@@ -232,7 +271,7 @@ std::optional<MaintenanceAction> WearBalancedStoragePolicy::on_storage_access(
     const NodeId endpoint = storage.tree().segment_leaf_for(access.access.node_id);
     const double age = seconds(access.access.request.timestamp_ns) -
                        seconds(state_.segment_first_ns(endpoint, StorageTier::Slc, storage));
-    if (age < effective_promotion_seconds(storage)) {
+    if (age < effective_promotion_seconds()) {
         return std::nullopt;
     }
     const AffinityId affinity = access.access.request.affinity_id == 0
@@ -263,16 +302,15 @@ StoragePolicyStats WearBalancedStoragePolicy::stats(const StorageView& storage) 
         gaps_.q95(),
         idle_threshold_seconds(storage),
         WearBalanceStats{
-            config_.slc_wa,
-            config_.tlc_wa,
-            state_.program_bytes(StorageTier::Slc) * config_.slc_wa /
-                (capacity_bytes(StorageTier::Slc, storage) * config_.slc_erase_budget),
-            state_.program_bytes(StorageTier::Tlc) * config_.tlc_wa /
-                (capacity_bytes(StorageTier::Tlc, storage) * config_.tlc_erase_budget),
-            (capacity_bytes(StorageTier::Tlc, storage) * config_.tlc_erase_budget / config_.tlc_wa) /
-                (capacity_bytes(StorageTier::Slc, storage) * config_.slc_erase_budget / config_.slc_wa +
-                 capacity_bytes(StorageTier::Tlc, storage) * config_.tlc_erase_budget / config_.tlc_wa),
-            effective_promotion_seconds(storage),
+            wa_[0],
+            wa_[1],
+            pressure_[0],
+            pressure_[1],
+            (capacity_bytes(StorageTier::Tlc, storage) * config_.tlc_erase_budget / wa_[1]) /
+                (capacity_bytes(StorageTier::Slc, storage) * config_.slc_erase_budget / wa_[0] +
+                 capacity_bytes(StorageTier::Tlc, storage) * config_.tlc_erase_budget / wa_[1]),
+            effective_promotion_seconds(),
+            learned_idle_multiplier_, reuse_ema_, feedback_windows_,
         },
     };
 }
@@ -302,9 +340,9 @@ StorageTier WearBalancedStoragePolicy::choose_tier(
         return StorageTier::Slc;
     }
     const double slc_endurance = capacity_bytes(StorageTier::Slc, storage) *
-                                 config_.slc_erase_budget / config_.slc_wa;
+                                 config_.slc_erase_budget / wa_[0];
     const double tlc_endurance = capacity_bytes(StorageTier::Tlc, storage) *
-                                 config_.tlc_erase_budget / config_.tlc_wa;
+                                 config_.tlc_erase_budget / wa_[1];
     const double target_tlc = tlc_endurance / (slc_endurance + tlc_endurance);
     const double actual_tlc = tlc_program / total_program;
     double probability = std::clamp(
@@ -347,7 +385,7 @@ double WearBalancedStoragePolicy::idle_threshold_seconds(
     const StorageView& storage
 ) const {
     double threshold = std::clamp(
-        config_.idle_multiplier * gaps_.q95(),
+        learned_idle_multiplier_ * gaps_.q95(),
         60.0,
         6.0 * 3600.0
     );
@@ -365,16 +403,8 @@ double WearBalancedStoragePolicy::idle_threshold_seconds(
     return std::max(60.0, threshold);
 }
 
-double WearBalancedStoragePolicy::effective_promotion_seconds(
-    const StorageView& storage
-) const {
-    const double slc_pressure = static_cast<double>(
-        state_.program_bytes(StorageTier::Slc)
-    ) * config_.slc_wa / (capacity_bytes(StorageTier::Slc, storage) * config_.slc_erase_budget);
-    const double tlc_pressure = static_cast<double>(
-        state_.program_bytes(StorageTier::Tlc)
-    ) * config_.tlc_wa / (capacity_bytes(StorageTier::Tlc, storage) * config_.tlc_erase_budget);
-    const double ratio = (tlc_pressure + 1e-12) / (slc_pressure + 1e-12);
+double WearBalancedStoragePolicy::effective_promotion_seconds() const {
+    const double ratio = (pressure_[1] + 1e-12) / (pressure_[0] + 1e-12);
     const double factor = std::clamp(
         std::pow(ratio, config_.adaptation_gain),
         0.5,

@@ -127,7 +127,7 @@ simulator.process_batch(
 - `baseline_ratio_lru`：按 SLC write ratio placement，pool 内 round-robin stream；
 - `wear_share_round_robin`：wear-share tier placement 与 pool 内 round-robin stream；
 - `wear_share_affinity`：wear-share tier placement 与 affinity hash stream；
-- `wear_balanced`：固定 WA 修正的寿命预算、新放置公式及估算压力驱动迁移，见文末配置说明。
+- `wear_balanced`：Shadow FTL 反馈修正寿命预算和迁移压力，可选在线 idle 控制，见文末配置说明。
 - `adaptive_endurance`：endurance-weighted placement、session gap/q95、自适应 promotion、access
   migration、周期 idle eviction 和后台 migration。
 
@@ -512,45 +512,108 @@ uv run python benchmark/memory_diagnosis.py \
 
 ### Wear-balanced Storage policy
 
-`wear_balanced` 在独立的 `WearBalancedStoragePolicy` 中实现
-`KVCache_Online_v5_Source_20260915` 的新放置公式及容量修正，使用固定 WA 估算寿命消耗。
-`adaptive_endurance` 保留原有算法和参数行为。两者都支持与 `context_lru` 组合。
+`wear_balanced` 采用 `KVCache_Online_v5_Shadow_Pipeline_20260916` 的新放置公式、容量修正和
+Shadow FTL 反馈。它始终消费已提交的 canonical I/O，在生成 trace 的过程中估计 NAND program、
+GC 写入和寿命压力。完整 trace 仍由 MQSim 独立回放；MQSim 结果不反馈到本次生成过程。
+`adaptive_endurance` 保留原有行为。两者均可与 `context_lru` 组合。
 
-设每个 tier 的容量为 C、擦写预算为 E、已提交的逻辑 program bytes 为 W：
+#### 算法和时间顺序
 
-- 固定 WA 必须有限且不小于 1，默认 SLC/TLC 都为 1。
-- 有效寿命预算 `B = C × E / WA`；目标 TLC 写入比例 `t = B_TLC / (B_SLC + B_TLC)`。
-- 实际 TLC 写入比例 `a = W_TLC / (W_SLC + W_TLC)`，包含 Dump 和迁移目的端写入。
-- 首次写入选择 SLC；以后 TLC 放置概率为 `clamp(t + direct_gain × (t - a), 0, 0.75)`。
-  使用 affinity 的稳定 hash 选择 tier，同一 affinity 的选择并非独立随机抽样。
-- 当 `u_SLC > 0.9`、`u_TLC < 0.9` 且 `a < t` 时，计算
-  `b = min(0.5, (u_SLC - 0.9) / 0.08)`，再取
-  `p = max(p, min(0.75, t + b × (1 - t)))`。
-- 估算压力 `P = W × WA / (C × E)`；有效迁移阈值为
-  `promotion_seconds × clamp(((P_TLC + 1e-12)/(P_SLC + 1e-12))^adaptation_gain, 0.5, 4)`。
+设 tier 的逻辑缓存容量为 C、擦写预算为 E、累计逻辑 program bytes 为 W：
 
-请求 gap/q95、容量修正的 idle 阈值、leaf 容量回收、访问迁移和后台维护沿用 Algorithm2。
-`promotion_seconds` 直接表示迁移基准，不隐式乘 2；共同参数默认仍为 idle multiplier 32、
-promotion 14400 秒。若采用新包在线模式的初始数值，显式配置 24 和 28800 秒。
-这些超参数不在线学习，实际阈值仍随历史访问、容量和累计写入变化。
+- 有效寿命预算 `B = C × E / WA`；目标 TLC 比例 `t = B_TLC / (B_SLC + B_TLC)`。
+- 实际 TLC 比例 `a = W_TLC / (W_SLC + W_TLC)`，包括 Dump 和迁移目的端写入。
+- 首次写入 SLC；以后 `p_TLC = clamp(t + direct_gain × (t - a), 0, 0.75)`。
+  affinity 的稳定 hash 决定选择，不是每次独立随机抽样。新公式从开始就启用，初始 WA=1。
+- 当 `u_SLC > 0.9`、`u_TLC < 0.9` 且 `a < t`，令 `b = min(0.5, (u_SLC - 0.9)/0.08)`，
+  再取 `p = max(p, min(0.75, t + b × (1 - t)))`。
+- Shadow 按窗口计算 `delta(NAND program)/delta(host program)`，并以 alpha=0.25 平滑 WA。
+  无 host 写入时保持 WA。迁移目的端写入计为 host program，GC 搬移单独计数。
+- 压力 `P = 累计 Shadow NAND program bytes / (Shadow nominal capacity × E)`。
+  有效迁移阈值为 `promotion_seconds × clamp(((P_TLC+1e-12)/(P_SLC+1e-12))^gain, 0.5, 4)`。
+- 请求 gap/q95、idle 容量衰减、leaf 回收和迁移执行流程沿用 Algorithm2。
 
-复制 `example/.env.example` 为 `example/.env`，按输入配置 block 大小、容量和流数，修改：
+反馈窗口按从时间 0 开始的固定周期推进，包括空窗口和 `finish()` 补跑时间。
+同一时间 t 的顺序为：结算 `[t-period,t)` 反馈 → 后台 tick → 请求。
+历史 timer 始终先于之后的反馈执行；一条请求内所有访问在其时间戳上原子地归入同一窗口。
+末尾不足一个完整窗口时仅保留最终 Shadow 计数，不额外运行控制器。
+
+#### 在线 idle 与 ghost
+
+`online_tuning=False`（默认）固定 idle multiplier；Shadow WA 和压力仍然更新。
+设为 `True` 时，idle 从 24 开始，以 `hit/(hit+ghost_miss)` 更新 EMA，倍率限制在 `[24,64]`。
+前四个窗口不调整；连续三个可信违约窗口才增大倍率。容量或 GC 压力高且连续八次违约时
+允许降低倍率。样本不足时冻结 EMA/idle 并清空 streak，不沿用旧 streak 继续调整。
+
+复用样本单位是 **KV block**，不是 token 或 NAND page。`min_reuse_blocks` 默认4096，
+`reuse_ema_scale_blocks` 默认50000，`alpha=min(0.2,N/(N+scale))`；应按 workload 的
+block 粒度配置。`reuse_loss_budget` 默认0.01，目标保有率为 `min(0.9999,1-budget+0.003)`。
+
+只有 DRAM 和 Storage 都失去副本才记录 ghost；Memory Drop、Dump 拒绝以及 Storage Trim
+均按最后副本判定。ghost 用全局 prefix-block hash 保存历史证据，不复制 Radix 拓扑。
+请求中最深 ghost hash 对应的前缀长度超过连续命中长度的部分计为 ghost miss；新 suffix 不入分母。
+记录在24小时后过期，定时反馈/请求会全局清理，重复淘汰刷新时间。ghost 并非无限历史 oracle。
+
+`promotion_seconds` 始终是显式的基准，默认14400秒，不再保留源代码中无实际学习效果的
+promotion 控制状态或隐式翻倍。采用8小时基准时显式设28800。固定模式 idle 默认32；
+在线模式使用24作为初始值。direct bias 恒为零，因此没有额外参数或学习状态。
+
+#### 配置
+
+在完整的 `example/.env` 中设置（block 大小必须是 Shadow page 大小的整数倍）：
 
 ```dotenv
 DWPDSIM_MEMORY_POLICY=context_lru
 DWPDSIM_STORAGE_POLICY=wear_balanced
-DWPDSIM_SLC_WA=1
-DWPDSIM_TLC_WA=1
-DWPDSIM_IDLE_MULTIPLIER=24
+DWPDSIM_ONLINE_TUNING=true
+DWPDSIM_FEEDBACK_PERIOD_NS=900000000000
 DWPDSIM_PROMOTION_SECONDS=28800
+DWPDSIM_SHADOW_PAGE_BYTES=4096
+DWPDSIM_SHADOW_PAGES_PER_BLOCK=256
+DWPDSIM_SHADOW_OVERPROVISIONING=0.07
+DWPDSIM_SHADOW_SLC_NOMINAL_BYTES=0
+DWPDSIM_SHADOW_TLC_NOMINAL_BYTES=0
+DWPDSIM_SHADOW_SLC_PHYSICAL_BLOCKS=0
+DWPDSIM_SHADOW_TLC_PHYSICAL_BLOCKS=0
+DWPDSIM_REUSE_LOSS_BUDGET=0.01
+DWPDSIM_MIN_REUSE_BLOCKS=4096
+DWPDSIM_REUSE_EMA_SCALE_BLOCKS=50000
 ```
 
-Memory retention、alpha、淘汰粒度和回填参数按 Memory 实验配置。执行
-`uv run --locked python example/run_pipeline.py` 即使用该 policy 生成 trace 并离线运行 MQSim。
-Python 入口为 `StoragePolicyConfig(kind="wear_balanced", slc_wa=1, tlc_wa=1)`；WA 参数只用于
-`wear_balanced`，其他 policy 忽略它们。
+Shadow nominal bytes 为0时使用对应 Storage 逻辑容量；显式值必须页对齐且不小于该逻辑容量。
+physical blocks 为0时，物理块数为 `ceil(nominal_bytes/page_bytes/pages_per_block/(1-OP))`；小池至少配置为
+`stream_count+2` 个块以容纳写入前沿和GC备用块。模型采用每流前沿和 tier 内共享容量，
+GC 按无效页最多、最后写入最早、擦除次数最少的顺序选择满块。
+可通过 `shadow_slc_physical_blocks`/`shadow_tlc_physical_blocks` 指定精确物理块数，
+用于 nominal 容量被独立覆盖的 profile；要求原始容量大于 nominal，并保留写入前沿和GC空间。
+Shadow 几何是显式配置，不自动读取 MQSim XML；需要对齐时按实际设备 profile 填写，
+记录中的物理块数包含取整和小池下限。不能将小池 smoke 结果外推到大容量设备。
 
-该 policy 的 `stats.algorithm` 增加 `slc_wa`、`tlc_wa`、`target_tlc_share`、
-`estimated_slc_pressure`、`estimated_tlc_pressure` 和 `effective_promotion_seconds`。
-压力基于固定 WA 和逻辑写入估算，不是实测 NAND program、GC 或物理磨损。
-MQSim 结果继续用于离线评估，不反馈到本次策略决策；没有 ghost、窗口 EMA 或在线调参。
+Python 使用 `StoragePolicyConfig(kind="wear_balanced", online_tuning=True, ...)`；字段名为
+上面环境变量去掉 `DWPDSIM_` 后的小写形式。旧固定 `slc_wa`/`tlc_wa` 构造参数和环境变量
+已删除，不保留固定WA回退路径。
+
+#### 输出与验证边界
+
+- canonical CSV schema v4 不变，Memory 命中仍不产生 I/O。
+- `<trace文件路径>.controller_windows.csv` 输出每个完整反馈窗口的复用样本、EMA、idle、
+  有效迁移阈值、WA、压力和累计 host/GC program pages。
+- `stats.algorithm` 中的 WA/`shadow_slc_pressure`/`shadow_tlc_pressure` 是最后一个完整窗口
+  应用到策略的反馈，另有 `feedback_windows`、`reuse_retention_ema`、`learned_idle_multiplier`。
+- `stats.shadow_ftl` 是包含末尾未满窗口写入的最终计数，记录几何、参数、host/GC program、
+  擦除次数、总WA、最后窗口WA EMA、当前累计寿命压力、ghost数量和累计ghost miss。
+- 固定WA压力指标 `estimated_slc_pressure`/`estimated_tlc_pressure` 已被 Shadow 压力替代。
+
+Shadow 同步执行写入和GC，忽略READ，不模拟时延、队列、通道竞争或物理完成时间。
+它提供模型估计，正式物理性能和磨损评估仍使用 MQSim；两者的WA可能不同。
+GC 页表和 ghost 历史会增加内存开销；它们均在 C++ 中执行，没有逐块 Python 回调。
+
+固定合成工作负载的开销检查：
+
+```bash
+uv run python benchmark/shadow_overhead.py --requests 20000 --output build/shadow-overhead
+```
+
+脚本使用128/256页的小池、每池2个stream、25%预留空间，分别运行原策略、Shadow固定超参数、
+Shadow在线调参。各策略产生的I/O可能不同，耗时不是等工作量加速比。小池多流的未满写入块
+会占用容量；预留空间不足时模型明确报错，不跳过事件或回退固定WA。

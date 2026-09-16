@@ -18,8 +18,7 @@ struct WearBalancedPolicyConfig {
     double logical_fill_fraction = 0.98;
     double slc_erase_budget = 120.0;
     double tlc_erase_budget = 12.0;
-    double slc_wa = 1.0;
-    double tlc_wa = 1.0;
+    ShadowConfig shadow;
     TimestampNs background_period_ns = 900ULL * 1000ULL * 1000ULL * 1000ULL;
 };
 
@@ -27,6 +26,8 @@ class WearBalancedStoragePolicy final : public StoragePolicy {
   public:
     explicit WearBalancedStoragePolicy(WearBalancedPolicyConfig config);
 
+    std::optional<ShadowConfig> shadow_config() const override;
+    void on_shadow_feedback(const ShadowFeedback&, const StorageView&) override;
     BackgroundSchedule background_schedule() const override;
     void on_request_begin(
         const RequestContext& request,
@@ -84,10 +85,16 @@ class WearBalancedStoragePolicy final : public StoragePolicy {
         const StorageView& storage
     ) const;
     double idle_threshold_seconds(const StorageView& storage) const;
-    double effective_promotion_seconds(const StorageView& storage) const;
+    double effective_promotion_seconds() const;
 
     WearBalancedPolicyConfig config_;
     StoragePolicyState state_;
+    std::array<double, 2> wa_{1, 1};
+    std::array<double, 2> pressure_{0, 0};
+    double learned_idle_multiplier_;
+    double reuse_ema_ = 1;
+    std::uint64_t feedback_windows_ = 0;
+    std::uint64_t violation_streak_ = 0, headroom_streak_ = 0;
     GapEstimator gaps_;
     std::map<AffinityId, TimestampNs> session_last_request_ns_;
 };

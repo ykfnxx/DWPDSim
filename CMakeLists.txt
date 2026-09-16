@@ -14,6 +14,7 @@ add_library(
     dwpdsim_core
     STATIC
     cpp/src/metrics.cpp
+    cpp/src/shadow_ftl.cpp
     cpp/src/policies/memory/baseline_memory_lru_policy.cpp
     cpp/src/policies/memory/context_memory_lru_policy.cpp
     cpp/src/policies/memory/indexed_memory_lru_policy.cpp

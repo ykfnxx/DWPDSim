@@ -816,3 +816,14 @@ Request(
     dependency-aware replay 才能宣称兑现 completion 依赖；
 18. DWPDSim 和 MQSim 的 operation 集合中不存在 `MIGRATE` opcode；
 19. 最终链路只包含 DWPDSim，不包含算法参考的运行时组件。
+
+## Wear-balanced Shadow feedback
+
+`wear_balanced` 请求 Simulator 创建 Shadow FTL。Simulator 将每个已经输出的 canonical
+READ/WRITE/TRIM 传给 Shadow，同一虚拟时间先结算前一个反馈窗口，再执行后台 tick 和请求。
+Shadow 状态属于 Simulator，policy 仅接收窗口快照并维护控制器状态。主 Radix、驻留和地址
+仍由 Core 唯一持有。Shadow 页表仅模拟 NAND，不替代逻辑目录。
+
+ghost 只记录最后副本丢失的全局 block hash；24小时过期和重复淘汰刷新独立于节点剪枝。
+在线复用样本以KV block为单位。固定 WA 配置已移除，新的几何/窗口参数和输出见 README
+的 Wear-balanced Storage policy 小节。MQSim 仍离线评估，不向生成器回灌正式模拟结果。

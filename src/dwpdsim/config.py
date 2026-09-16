@@ -66,9 +66,19 @@ class StoragePolicyConfig:
     rr_subtree_counts: bool = False
     rr_verify_victims: bool = False
     rr_profile: bool = False
-    # wear_balanced only: fixed write amplification estimates, finite and >= 1.
-    slc_wa: float = 1.0
-    tlc_wa: float = 1.0
+    # wear_balanced: Shadow FTL and optional reuse-driven idle tuning.
+    online_tuning: bool = False
+    feedback_period_ns: int = 900 * 1_000_000_000
+    shadow_page_bytes: int = 4096
+    shadow_pages_per_block: int = 256
+    shadow_overprovisioning: float = 0.07
+    shadow_slc_nominal_bytes: int = 0
+    shadow_tlc_nominal_bytes: int = 0
+    reuse_loss_budget: float = 0.01
+    min_reuse_blocks: int = 4096
+    reuse_ema_scale_blocks: int = 50000
+    shadow_slc_physical_blocks: int = 0
+    shadow_tlc_physical_blocks: int = 0
 
 
 @dataclass(frozen=True, slots=True)

@@ -283,6 +283,8 @@ def adaptive_endurance(
 ):
     return StoragePolicyConfig(
         kind=kind,
+        shadow_page_bytes=512,
+        feedback_period_ns=250_000_000,
         logical_fill_fraction=1.0,
         promotion_seconds=promotion_seconds,
         idle_multiplier=idle_multiplier,

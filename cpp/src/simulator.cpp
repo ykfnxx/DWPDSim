@@ -92,6 +92,15 @@ Simulator::Simulator(
     memory_policy_->bind_tree(tree_);
     if (!config_.infinite_storage) {
         next_background_tick_ns_ = storage_policy_->background_schedule().period_ns;
+        if (const auto shadow_config = storage_policy_->shadow_config()) {
+            shadow_ = std::make_unique<ShadowFtl>(config_, *shadow_config);
+            feedback_period_ns_ = next_feedback_ns_ = shadow_config->feedback_period_ns;
+            controller_windows_.open(trace_path.string() + ".controller_windows.csv");
+            if (!controller_windows_) { throw std::runtime_error("cannot open controller window output"); }
+            controller_windows_ << "timestamp_ns,hit_blocks,ghost_miss_blocks,reusable_blocks,reuse,"
+                "reuse_ema,idle_multiplier,effective_promotion_seconds,wa_slc,wa_tlc,p_slc,p_tlc,"
+                "slc_host_pages,slc_gc_pages,tlc_host_pages,tlc_gc_pages\n";
+        }
     }
 }
 
@@ -133,6 +142,8 @@ void Simulator::process_request(
 
     std::optional<NodeId> parent_id;
     bool prefix_hit = true;
+    std::uint64_t hit_blocks = 0;
+    const auto ghost_prefix = shadow_ ? shadow_->ghost_prefix(hash_ids, hash_count, timestamp_ns) : 0;
     const std::uint64_t misses_before = metrics_.global_misses;
     for (std::size_t position = 0; position < hash_count; ++position) {
         const auto [node_id, created] = parent_id.has_value()
@@ -162,7 +173,11 @@ void Simulator::process_request(
         });
         prefix_hit = prefix_hit && result != AccessResult::GlobalMiss;
         metrics_.record_access(prefix_hit ? result : AccessResult::GlobalMiss);
+        if (prefix_hit) { ++hit_blocks; }
         parent_id = node_id;
+    }
+    if (shadow_) {
+        shadow_->record_request(hit_blocks, ghost_prefix > hit_blocks ? ghost_prefix - hit_blocks : 0);
     }
     metrics_.compute_cost += (metrics_.global_misses - misses_before) * hash_count;
     {
@@ -211,6 +226,11 @@ void Simulator::finish(TimestampNs simulation_end_ns) {
     }
     run_until(simulation_end_ns);
     trace_writer_.finish();
+    if (controller_windows_.is_open()) {
+        controller_windows_.flush();
+        if (!controller_windows_) { throw std::runtime_error("cannot flush controller windows"); }
+        controller_windows_.close();
+    }
     if (memory_diagnostics_.is_open()) { memory_diagnostics_.close(); }
     finished_ = true;
 }
@@ -316,16 +336,50 @@ void Simulator::collect_protected_prefix(
     }
 }
 
+std::uint64_t Simulator::emit_io(
+    const TraceContext& context, NodeId node_id, Operation operation, const Node& node,
+    const StorageLocation& location, TraceReason reason, std::optional<MoveId> move,
+    std::optional<std::uint64_t> dependency
+) {
+    const auto sequence = trace_writer_.emit(context, node_id, operation, node, location, reason, move, dependency);
+    if (shadow_) { shadow_->consume(operation, location, context.timestamp_ns); }
+    return sequence;
+}
+
 void Simulator::run_until(TimestampNs target_ns) {
     if (config_.infinite_storage) { return; }
-    const TimestampNs period_ns = storage_policy_->background_schedule().period_ns;
-    if (period_ns == 0) {
-        return;
+    const auto background_period = storage_policy_->background_schedule().period_ns;
+    const auto advance = [](TimestampNs& next, TimestampNs period) {
+        next = next > std::numeric_limits<TimestampNs>::max() - period ? 0 : next + period;
+    };
+    while (true) {
+        const bool feedback_due = next_feedback_ns_ && next_feedback_ns_ <= target_ns;
+        const bool background_due = next_background_tick_ns_ && next_background_tick_ns_ <= target_ns;
+        if (!feedback_due && !background_due) { break; }
+        // Close [previous boundary, t) before background and requests at t.
+        if (feedback_due && (!background_due || next_feedback_ns_ <= next_background_tick_ns_)) {
+            close_feedback_window(next_feedback_ns_);
+            advance(next_feedback_ns_, feedback_period_ns_);
+        } else {
+            drain_background_tick(next_background_tick_ns_);
+            advance(next_background_tick_ns_, background_period);
+        }
     }
-    while (next_background_tick_ns_ <= target_ns) {
-        drain_background_tick(next_background_tick_ns_);
-        next_background_tick_ns_ += period_ns;
-    }
+}
+
+void Simulator::close_feedback_window(TimestampNs timestamp_ns) {
+    const auto feedback = shadow_->close_window(timestamp_ns);
+    storage_policy_->on_shadow_feedback(feedback, storage_view());
+    const auto control = *storage_policy_->stats(storage_view()).wear_balance;
+    const auto samples = feedback.hit_blocks + feedback.ghost_miss_blocks;
+    const double reuse = samples ? static_cast<double>(feedback.hit_blocks) / samples : 1;
+    controller_windows_ << timestamp_ns << ',' << feedback.hit_blocks << ',' << feedback.ghost_miss_blocks
+        << ',' << samples << ',' << reuse << ',' << control.reuse_retention_ema << ','
+        << control.learned_idle_multiplier << ',' << control.effective_promotion_seconds << ','
+        << feedback.pools[0].wa_ema << ',' << feedback.pools[1].wa_ema << ','
+        << feedback.pools[0].lifetime_pressure << ',' << feedback.pools[1].lifetime_pressure << ','
+        << feedback.pools[0].host_program_pages << ',' << feedback.pools[0].gc_program_pages << ','
+        << feedback.pools[1].host_program_pages << ',' << feedback.pools[1].gc_program_pages << '\n';
 }
 
 void Simulator::drain_background_tick(TimestampNs timestamp_ns) {
@@ -412,7 +466,7 @@ AccessResult Simulator::process_access(const AccessContext& context) {
                         trace_context(context)
                     )) {
                     const MoveId move_id = next_move_id_++;
-                    const std::uint64_t read_sequence = trace_writer_.emit(
+                    const std::uint64_t read_sequence = emit_io(
                         trace_context(context),
                         context.node_id,
                         Operation::Read,
@@ -434,7 +488,7 @@ AccessResult Simulator::process_access(const AccessContext& context) {
                 }
             }
             if (!relocated) {
-                trace_writer_.emit(
+                emit_io(
                     trace_context(context),
                     context.node_id,
                     Operation::Read,
@@ -552,6 +606,9 @@ void Simulator::evict_from_memory(const AccessContext& context) {
             }
             metrics_.memory_removed(victim.on_storage);
             victim.in_memory = false;
+            if (shadow_ && !victim.on_storage) {
+                shadow_->record_loss(node_id, context.request.timestamp_ns);
+            }
             --memory_used_blocks_;
             notify_memory_commit(
                 MemoryMutation{MemoryMutationKind::Removed, node_id}
@@ -626,7 +683,7 @@ bool Simulator::dump_segment(
         node.set_storage_location(location);
         metrics_.storage_written(location.tier, node.in_memory);
         metrics_.record_io(Operation::Write, location.tier, location.stream_id, true);
-        trace_writer_.emit(
+        emit_io(
             trace_context(context),
             node_id,
             Operation::Write,
@@ -741,7 +798,7 @@ bool Simulator::execute_trim(
     for (NodeId node_id : nodes) {
         Node& node = tree_.node(node_id);
         const StorageLocation location = node.storage_location();
-        trace_writer_.emit(
+        emit_io(
             trace_context_value,
             node_id,
             Operation::Trim,
@@ -753,6 +810,7 @@ bool Simulator::execute_trim(
         storage_.tier(location.tier).release(location.block_address);
         metrics_.storage_removed(location.tier, node.in_memory);
         node.clear_storage_location();
+        if (shadow_ && !node.in_memory) { shadow_->record_loss(node_id, trace_context_value.timestamp_ns); }
     }
     notify_storage_commit(StorageMutation{
         plane == ActionPlane::Capacity
@@ -861,7 +919,7 @@ bool Simulator::execute_relocation(
             ++metrics_.relocation_reused_read_blocks;
             metrics_.relocation_reused_read_bytes += config_.block_size_bytes;
         } else {
-            read_sequences.push_back(trace_writer_.emit(
+            read_sequences.push_back(emit_io(
                 trace_context_value,
                 node_id,
                 Operation::Read,
@@ -894,7 +952,7 @@ bool Simulator::execute_relocation(
 
     for (std::size_t index = 0; index < nodes.size(); ++index) {
         Node& node = tree_.node(nodes[index]);
-        write_sequences.push_back(trace_writer_.emit(
+        write_sequences.push_back(emit_io(
             trace_context_value,
             nodes[index],
             Operation::Write,
@@ -927,7 +985,7 @@ bool Simulator::execute_relocation(
     });
 
     for (std::size_t index = 0; index < nodes.size(); ++index) {
-        trace_writer_.emit(
+        emit_io(
             trace_context_value,
             nodes[index],
             Operation::Trim,

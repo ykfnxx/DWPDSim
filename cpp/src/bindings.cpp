@@ -267,8 +267,11 @@ py::dict simulator_stats(const Simulator& simulator) {
         const auto& wear = *policy.wear_balance;
         algorithm["slc_wa"] = wear.slc_wa;
         algorithm["tlc_wa"] = wear.tlc_wa;
-        algorithm["estimated_slc_pressure"] = wear.estimated_slc_pressure;
-        algorithm["estimated_tlc_pressure"] = wear.estimated_tlc_pressure;
+        algorithm["shadow_slc_pressure"] = wear.shadow_slc_pressure;
+        algorithm["shadow_tlc_pressure"] = wear.shadow_tlc_pressure;
+        algorithm["learned_idle_multiplier"] = wear.learned_idle_multiplier;
+        algorithm["reuse_retention_ema"] = wear.reuse_retention_ema;
+        algorithm["feedback_windows"] = wear.feedback_windows;
         algorithm["target_tlc_share"] = wear.target_tlc_share;
         algorithm["effective_promotion_seconds"] = wear.effective_promotion_seconds;
     }
@@ -306,6 +309,39 @@ py::dict simulator_stats(const Simulator& simulator) {
     result["errors"] = std::move(errors);
     result["tree"] = std::move(tree);
     result["trace"] = std::move(trace);
+    if (const auto* shadow = simulator.shadow()) {
+        const auto state = shadow->stats();
+        py::dict output;
+        output["model"] = "shadow_ftl";
+        const auto& settings = shadow->config();
+        output["page_bytes"] = settings.page_bytes;
+        output["pages_per_block"] = settings.pages_per_block;
+        output["overprovisioning"] = settings.overprovisioning;
+        output["feedback_period_ns"] = settings.feedback_period_ns;
+        output["online_tuning"] = settings.online_tuning;
+        output["reuse_loss_budget"] = settings.reuse_loss_budget;
+        output["min_reuse_blocks"] = settings.min_reuse_blocks;
+        output["reuse_ema_scale_blocks"] = settings.reuse_ema_scale_blocks;
+        output["slc_endurance"] = settings.slc_endurance;
+        output["tlc_endurance"] = settings.tlc_endurance;
+        output["ghost_entries"] = shadow->ghost_entries();
+        output["ghost_miss_blocks"] = shadow->total_ghost_misses();
+        for (std::size_t i = 0; i < 2; ++i) {
+            const auto& pool = state.pools[i];
+            py::dict values;
+            values["host_program_pages"] = pool.host_program_pages;
+            values["gc_program_pages"] = pool.gc_program_pages;
+            values["erases"] = pool.erases;
+            values["physical_blocks"] = pool.physical_blocks;
+            values["nominal_bytes"] = pool.nominal_bytes;
+            values["wa_ema"] = pool.wa_ema;
+            values["lifetime_pressure"] = pool.lifetime_pressure;
+            values["write_amplification"] = pool.host_program_pages ?
+                static_cast<double>(pool.host_program_pages + pool.gc_program_pages) / pool.host_program_pages : 1.0;
+            output[i == 0 ? "slc" : "tlc"] = values;
+        }
+        result["shadow_ftl"] = output;
+    }
     return result;
 }
 
@@ -376,8 +412,18 @@ PYBIND11_MODULE(_core, module) {
                          double memory_retention_growth_seconds_per_block,
                          std::optional<TimestampNs> memory_eviction_gap_reference_ns,
                          std::uint64_t memory_eviction_base_blocks,
-                         double slc_wa,
-                         double tlc_wa
+                         bool online_tuning,
+                         TimestampNs feedback_period_ns,
+                         std::uint64_t shadow_page_bytes,
+                         std::uint64_t shadow_pages_per_block,
+                         double shadow_overprovisioning,
+                         std::uint64_t shadow_slc_nominal_bytes,
+                         std::uint64_t shadow_tlc_nominal_bytes,
+                         double reuse_loss_budget,
+                         std::uint64_t min_reuse_blocks,
+                         std::uint64_t reuse_ema_scale_blocks,
+                         std::uint64_t shadow_slc_physical_blocks,
+                         std::uint64_t shadow_tlc_physical_blocks
                      ) {
                 if (slc_host_share <= 0.0 || slc_host_share >= 1.0) {
                     throw py::value_error("slc_host_share must be between 0 and 1");
@@ -448,7 +494,13 @@ PYBIND11_MODULE(_core, module) {
                 const WearBalancedPolicyConfig wear_balanced{
                     idle_multiplier, promotion_seconds, adaptation_gain, direct_gain,
                     slc_soft_utilization, occupancy_decay, logical_fill_fraction,
-                    slc_erase_budget, tlc_erase_budget, slc_wa, tlc_wa, background_period_ns,
+                    slc_erase_budget, tlc_erase_budget,
+                    ShadowConfig{online_tuning, feedback_period_ns, shadow_page_bytes,
+                        shadow_pages_per_block, shadow_overprovisioning, shadow_slc_nominal_bytes,
+                        shadow_tlc_nominal_bytes, slc_erase_budget, tlc_erase_budget,
+                        reuse_loss_budget, min_reuse_blocks, reuse_ema_scale_blocks,
+                        shadow_slc_physical_blocks, shadow_tlc_physical_blocks},
+                    background_period_ns,
                 };
                 config.infinite_storage = storage_policy == "infinite_storage";
                 auto storage = make_storage_policy(
@@ -502,8 +554,18 @@ PYBIND11_MODULE(_core, module) {
             py::arg("memory_retention_growth_seconds_per_block") = 0.0,
             py::arg("memory_eviction_gap_reference_ns") = py::none(),
             py::arg("memory_eviction_base_blocks") = 64,
-            py::arg("slc_wa") = 1.0,
-            py::arg("tlc_wa") = 1.0
+            py::arg("online_tuning") = false,
+            py::arg("feedback_period_ns") = 900000000000ULL,
+            py::arg("shadow_page_bytes") = 4096ULL,
+            py::arg("shadow_pages_per_block") = 256ULL,
+            py::arg("shadow_overprovisioning") = 0.07,
+            py::arg("shadow_slc_nominal_bytes") = 0ULL,
+            py::arg("shadow_tlc_nominal_bytes") = 0ULL,
+            py::arg("reuse_loss_budget") = 0.01,
+            py::arg("min_reuse_blocks") = 4096ULL,
+            py::arg("reuse_ema_scale_blocks") = 50000ULL,
+            py::arg("shadow_slc_physical_blocks") = 0ULL,
+            py::arg("shadow_tlc_physical_blocks") = 0ULL
         )
         .def("storage_performance", [](const Simulator& simulator) {
             py::dict result;
