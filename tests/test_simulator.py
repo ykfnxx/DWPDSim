@@ -276,12 +276,13 @@ def test_policy_initial_placement_is_deterministic(tmp_path, kind, expected_tier
 
 def adaptive_endurance(
     *,
+    kind="adaptive_endurance",
     background_period_ns=0,
     idle_multiplier=1e9,
     promotion_seconds=2.0,
 ):
     return StoragePolicyConfig(
-        kind="adaptive_endurance",
+        kind=kind,
         logical_fill_fraction=1.0,
         promotion_seconds=promotion_seconds,
         idle_multiplier=idle_multiplier,
@@ -289,9 +290,10 @@ def adaptive_endurance(
     )
 
 
-def test_access_migration_reuses_storage_hit_read(tmp_path):
+@pytest.mark.parametrize("policy_kind", ["adaptive_endurance", "wear_balanced"])
+def test_access_migration_reuses_storage_hit_read(tmp_path, policy_kind):
     trace_path = tmp_path / "access-migration.csv"
-    simulator = DWPDSimulator(config(storage_policy=adaptive_endurance()), trace_path)
+    simulator = DWPDSimulator(config(storage_policy=adaptive_endurance(kind=policy_kind)), trace_path)
     simulator.process(0, 1, 11, [1])
     simulator.process(0, 2, 22, [2])
     simulator.process(1_000_000_000, 3, 11, [1])
@@ -312,12 +314,13 @@ def test_access_migration_reuses_storage_hit_read(tmp_path):
     assert len({row["move_id"] for row in rows}) == 1
 
 
-def test_background_ticks_run_through_request_gap_and_finish(tmp_path):
+@pytest.mark.parametrize("policy_kind", ["adaptive_endurance", "wear_balanced"])
+def test_background_ticks_run_through_request_gap_and_finish(tmp_path, policy_kind):
     second = 1_000_000_000
     trace_path = tmp_path / "background.csv"
     simulator = DWPDSimulator(
         config(
-            storage_policy=adaptive_endurance(background_period_ns=second),
+            storage_policy=adaptive_endurance(kind=policy_kind, background_period_ns=second),
             simulation_end_ns=3 * second,
         ),
         trace_path,
@@ -335,11 +338,13 @@ def test_background_ticks_run_through_request_gap_and_finish(tmp_path):
     assert [row["operation"] for row in rows] == ["READ", "WRITE", "TRIM"]
 
 
-def test_background_relocation_preserves_last_logical_access_time(tmp_path):
+@pytest.mark.parametrize("policy_kind", ["adaptive_endurance", "wear_balanced"])
+def test_background_relocation_preserves_last_logical_access_time(tmp_path, policy_kind):
     second = 1_000_000_000
     simulator = DWPDSimulator(
         config(
             storage_policy=adaptive_endurance(
+                kind=policy_kind,
                 background_period_ns=second,
                 idle_multiplier=0.0,
                 promotion_seconds=4.0,
@@ -358,11 +363,12 @@ def test_background_relocation_preserves_last_logical_access_time(tmp_path):
     assert stats["storage"]["tlc"]["live_bytes"] == 0
 
 
-def test_batch_and_sequential_requests_are_identical_with_affinity_and_ticks(tmp_path):
+@pytest.mark.parametrize("policy_kind", ["adaptive_endurance", "wear_balanced"])
+def test_batch_and_sequential_requests_are_identical_with_affinity_and_ticks(tmp_path, policy_kind):
     second = 1_000_000_000
     simulation_config = config(
         memory_blocks=2,
-        storage_policy=adaptive_endurance(background_period_ns=second),
+        storage_policy=adaptive_endurance(kind=policy_kind, background_period_ns=second),
         simulation_end_ns=3 * second,
     )
     requests = [
@@ -391,9 +397,10 @@ def test_batch_and_sequential_requests_are_identical_with_affinity_and_ticks(tmp
     ).read_text(encoding="utf-8")
 
 
-def test_adaptive_endurance_observes_one_gap_per_request(tmp_path):
+@pytest.mark.parametrize("policy_kind", ["adaptive_endurance", "wear_balanced"])
+def test_adaptive_endurance_observes_one_gap_per_request(tmp_path, policy_kind):
     simulator = DWPDSimulator(
-        config(memory_blocks=8, storage_policy=adaptive_endurance()),
+        config(memory_blocks=8, storage_policy=adaptive_endurance(kind=policy_kind)),
         tmp_path / "gaps.csv",
     )
     simulator.run(

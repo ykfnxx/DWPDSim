@@ -127,6 +127,7 @@ simulator.process_batch(
 - `baseline_ratio_lru`：按 SLC write ratio placement，pool 内 round-robin stream；
 - `wear_share_round_robin`：wear-share tier placement 与 pool 内 round-robin stream；
 - `wear_share_affinity`：wear-share tier placement 与 affinity hash stream；
+- `wear_balanced`：固定 WA 修正的寿命预算、新放置公式及估算压力驱动迁移，见文末配置说明。
 - `adaptive_endurance`：endurance-weighted placement、session gap/q95、自适应 promotion、access
   migration、周期 idle eviction 和后台 migration。
 
@@ -508,3 +509,48 @@ uv run python benchmark/memory_diagnosis.py \
 
 “写入后未再访问”衡量实际淘汰轨迹中的潜在可避免写入，不是重新选择所有候选的
 全局最优策略，也不是部署策略的可实现收益。改变选择可能改变后续缓存状态。
+
+### Wear-balanced Storage policy
+
+`wear_balanced` 在独立的 `WearBalancedStoragePolicy` 中实现
+`KVCache_Online_v5_Source_20260915` 的新放置公式及容量修正，使用固定 WA 估算寿命消耗。
+`adaptive_endurance` 保留原有算法和参数行为。两者都支持与 `context_lru` 组合。
+
+设每个 tier 的容量为 C、擦写预算为 E、已提交的逻辑 program bytes 为 W：
+
+- 固定 WA 必须有限且不小于 1，默认 SLC/TLC 都为 1。
+- 有效寿命预算 `B = C × E / WA`；目标 TLC 写入比例 `t = B_TLC / (B_SLC + B_TLC)`。
+- 实际 TLC 写入比例 `a = W_TLC / (W_SLC + W_TLC)`，包含 Dump 和迁移目的端写入。
+- 首次写入选择 SLC；以后 TLC 放置概率为 `clamp(t + direct_gain × (t - a), 0, 0.75)`。
+  使用 affinity 的稳定 hash 选择 tier，同一 affinity 的选择并非独立随机抽样。
+- 当 `u_SLC > 0.9`、`u_TLC < 0.9` 且 `a < t` 时，计算
+  `b = min(0.5, (u_SLC - 0.9) / 0.08)`，再取
+  `p = max(p, min(0.75, t + b × (1 - t)))`。
+- 估算压力 `P = W × WA / (C × E)`；有效迁移阈值为
+  `promotion_seconds × clamp(((P_TLC + 1e-12)/(P_SLC + 1e-12))^adaptation_gain, 0.5, 4)`。
+
+请求 gap/q95、容量修正的 idle 阈值、leaf 容量回收、访问迁移和后台维护沿用 Algorithm2。
+`promotion_seconds` 直接表示迁移基准，不隐式乘 2；共同参数默认仍为 idle multiplier 32、
+promotion 14400 秒。若采用新包在线模式的初始数值，显式配置 24 和 28800 秒。
+这些超参数不在线学习，实际阈值仍随历史访问、容量和累计写入变化。
+
+复制 `example/.env.example` 为 `example/.env`，按输入配置 block 大小、容量和流数，修改：
+
+```dotenv
+DWPDSIM_MEMORY_POLICY=context_lru
+DWPDSIM_STORAGE_POLICY=wear_balanced
+DWPDSIM_SLC_WA=1
+DWPDSIM_TLC_WA=1
+DWPDSIM_IDLE_MULTIPLIER=24
+DWPDSIM_PROMOTION_SECONDS=28800
+```
+
+Memory retention、alpha、淘汰粒度和回填参数按 Memory 实验配置。执行
+`uv run --locked python example/run_pipeline.py` 即使用该 policy 生成 trace 并离线运行 MQSim。
+Python 入口为 `StoragePolicyConfig(kind="wear_balanced", slc_wa=1, tlc_wa=1)`；WA 参数只用于
+`wear_balanced`，其他 policy 忽略它们。
+
+该 policy 的 `stats.algorithm` 增加 `slc_wa`、`tlc_wa`、`target_tlc_share`、
+`estimated_slc_pressure`、`estimated_tlc_pressure` 和 `effective_promotion_seconds`。
+压力基于固定 WA 和逻辑写入估算，不是实测 NAND program、GC 或物理磨损。
+MQSim 结果继续用于离线评估，不反馈到本次策略决策；没有 ghost、窗口 EMA 或在线调参。

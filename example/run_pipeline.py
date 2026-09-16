@@ -113,6 +113,8 @@ def simulation_config() -> SimulationConfig:
             slc_erase_budget=float(required("DWPDSIM_SLC_ERASE_BUDGET")),
             tlc_erase_budget=float(required("DWPDSIM_TLC_ERASE_BUDGET")),
             background_period_ns=int(required("DWPDSIM_BACKGROUND_PERIOD_NS")),
+            slc_wa=float(os.environ.get("DWPDSIM_SLC_WA", "1")),
+            tlc_wa=float(os.environ.get("DWPDSIM_TLC_WA", "1")),
         ),
         simulation_end_ns=optional_int("DWPDSIM_SIMULATION_END_NS"),
         progress_interval_requests=int(required("DWPDSIM_PROGRESS_INTERVAL_REQUESTS")),

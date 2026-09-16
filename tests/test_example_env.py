@@ -148,3 +148,18 @@ def test_env_context_eviction_limit(monkeypatch, tmp_path, limit, removed):
         sim.process(0, 0, 0, [1, 2])
         sim.process(1, 1, 0, [3])
         assert sim.stats()["memory"]["evicted_blocks"] == removed
+
+
+def test_env_wear_balanced_wa_reaches_native_policy(monkeypatch, tmp_path):
+    configure(monkeypatch, tmp_path, "")
+    monkeypatch.setenv("DWPDSIM_STORAGE_POLICY", "wear_balanced")
+    monkeypatch.setenv("DWPDSIM_SLC_WA", "2")
+    monkeypatch.setenv("DWPDSIM_TLC_WA", "3")
+    namespace = runpy.run_path(str(ROOT / "example/run_pipeline.py"))
+    with DWPDSimulator(namespace["simulation_config"](), tmp_path / "wear.csv") as sim:
+        sim.process(0, 0, 1, [1, 2])
+        sim.process(1, 1, 1, [3])
+    stats = sim.stats()["algorithm"]
+    assert stats["slc_wa"] == 2
+    assert stats["tlc_wa"] == 3
+    assert stats["slc_program_bytes"] > 0

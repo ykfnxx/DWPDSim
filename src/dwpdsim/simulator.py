@@ -80,6 +80,8 @@ class DWPDSimulator:
             slc_erase_budget=storage.slc_erase_budget,
             tlc_erase_budget=storage.tlc_erase_budget,
             background_period_ns=storage.background_period_ns,
+            slc_wa=storage.slc_wa,
+            tlc_wa=storage.tlc_wa,
         )
         self._processed_requests = 0
         self._next_progress_request = config.progress_interval_requests

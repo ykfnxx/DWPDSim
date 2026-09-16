@@ -55,7 +55,8 @@ std::unique_ptr<StoragePolicy> make_storage_policy(
     double slc_write_ratio,
     const WearShareRoundRobinPolicyConfig& round_robin,
     const WearShareAffinityPolicyConfig& affinity,
-    const AdaptiveEndurancePolicyConfig& adaptive
+    const AdaptiveEndurancePolicyConfig& adaptive,
+    const WearBalancedPolicyConfig& wear_balanced
 ) {
     if (kind == "infinite_storage") { return nullptr; }
     if (kind == "baseline_fixed_lru") {
@@ -82,12 +83,15 @@ std::unique_ptr<StoragePolicy> make_storage_policy(
     if (kind == "wear_share_affinity") {
         return std::make_unique<WearShareAffinityStoragePolicy>(affinity);
     }
+    if (kind == "wear_balanced") {
+        return std::make_unique<WearBalancedStoragePolicy>(wear_balanced);
+    }
     if (kind == "adaptive_endurance") {
         return std::make_unique<AdaptiveEnduranceStoragePolicy>(adaptive);
     }
     throw py::value_error(
         "storage policy must be baseline_fixed_lru, baseline_ratio_lru, "
-        "wear_share_round_robin, wear_share_affinity, adaptive_endurance, or infinite_storage"
+        "wear_share_round_robin, wear_share_affinity, adaptive_endurance, wear_balanced, or infinite_storage"
     );
 }
 
@@ -259,6 +263,15 @@ py::dict simulator_stats(const Simulator& simulator) {
     algorithm["gap_samples"] = policy.gap_samples;
     algorithm["gap_q95_seconds"] = policy.gap_q95_seconds;
     algorithm["idle_threshold_seconds"] = policy.idle_threshold_seconds;
+    if (policy.wear_balance) {
+        const auto& wear = *policy.wear_balance;
+        algorithm["slc_wa"] = wear.slc_wa;
+        algorithm["tlc_wa"] = wear.tlc_wa;
+        algorithm["estimated_slc_pressure"] = wear.estimated_slc_pressure;
+        algorithm["estimated_tlc_pressure"] = wear.estimated_tlc_pressure;
+        algorithm["target_tlc_share"] = wear.target_tlc_share;
+        algorithm["effective_promotion_seconds"] = wear.effective_promotion_seconds;
+    }
 
     py::dict errors;
     errors["no_space"] = metrics.no_space;
@@ -362,7 +375,9 @@ PYBIND11_MODULE(_core, module) {
                          std::optional<std::uint64_t> memory_max_eviction_blocks,
                          double memory_retention_growth_seconds_per_block,
                          std::optional<TimestampNs> memory_eviction_gap_reference_ns,
-                         std::uint64_t memory_eviction_base_blocks
+                         std::uint64_t memory_eviction_base_blocks,
+                         double slc_wa,
+                         double tlc_wa
                      ) {
                 if (slc_host_share <= 0.0 || slc_host_share >= 1.0) {
                     throw py::value_error("slc_host_share must be between 0 and 1");
@@ -430,6 +445,11 @@ PYBIND11_MODULE(_core, module) {
                     tlc_erase_budget,
                     background_period_ns,
                 };
+                const WearBalancedPolicyConfig wear_balanced{
+                    idle_multiplier, promotion_seconds, adaptation_gain, direct_gain,
+                    slc_soft_utilization, occupancy_decay, logical_fill_fraction,
+                    slc_erase_budget, tlc_erase_budget, slc_wa, tlc_wa, background_period_ns,
+                };
                 config.infinite_storage = storage_policy == "infinite_storage";
                 auto storage = make_storage_policy(
                     storage_policy,
@@ -439,7 +459,8 @@ PYBIND11_MODULE(_core, module) {
                     slc_write_ratio,
                     round_robin,
                     affinity,
-                    adaptive
+                    adaptive,
+                    wear_balanced
                 );
                 return std::make_unique<Simulator>(
                     std::move(config),
@@ -480,7 +501,9 @@ PYBIND11_MODULE(_core, module) {
             py::arg("memory_max_eviction_blocks") = py::none(),
             py::arg("memory_retention_growth_seconds_per_block") = 0.0,
             py::arg("memory_eviction_gap_reference_ns") = py::none(),
-            py::arg("memory_eviction_base_blocks") = 64
+            py::arg("memory_eviction_base_blocks") = 64,
+            py::arg("slc_wa") = 1.0,
+            py::arg("tlc_wa") = 1.0
         )
         .def("storage_performance", [](const Simulator& simulator) {
             py::dict result;

@@ -66,6 +66,9 @@ class StoragePolicyConfig:
     rr_subtree_counts: bool = False
     rr_verify_victims: bool = False
     rr_profile: bool = False
+    # wear_balanced only: fixed write amplification estimates, finite and >= 1.
+    slc_wa: float = 1.0
+    tlc_wa: float = 1.0
 
 
 @dataclass(frozen=True, slots=True)

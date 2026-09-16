@@ -116,12 +116,22 @@ struct StorageMutation {
     std::uint64_t bytes = 0;
 };
 
+struct WearBalanceStats {
+    double slc_wa;
+    double tlc_wa;
+    double estimated_slc_pressure;
+    double estimated_tlc_pressure;
+    double target_tlc_share;
+    double effective_promotion_seconds;
+};
+
 struct StoragePolicyStats {
     std::uint64_t slc_program_bytes = 0;
     std::uint64_t tlc_program_bytes = 0;
     std::uint64_t gap_samples = 0;
     double gap_q95_seconds = 0.0;
     double idle_threshold_seconds = 0.0;
+    std::optional<WearBalanceStats> wear_balance;
 };
 
 struct StoragePolicyWork {
