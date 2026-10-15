@@ -18,6 +18,7 @@ add_library(
     cpp/src/policies/memory/baseline_memory_lru_policy.cpp
     cpp/src/policies/memory/context_memory_lru_policy.cpp
     cpp/src/policies/memory/indexed_memory_lru_policy.cpp
+    cpp/src/policies/memory/reuse_memory_lru_policy.cpp
     cpp/src/policies/storage/adaptive_endurance_storage_policy.cpp
     cpp/src/policies/storage/wear_balanced_storage_policy.cpp
     cpp/src/policies/storage/baseline_fixed_lru_storage_policy.cpp

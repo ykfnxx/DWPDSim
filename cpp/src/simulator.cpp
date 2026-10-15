@@ -145,6 +145,7 @@ void Simulator::process_request(
     std::uint64_t hit_blocks = 0;
     const auto ghost_prefix = shadow_ ? shadow_->ghost_prefix(hash_ids, hash_count, timestamp_ns) : 0;
     const std::uint64_t misses_before = metrics_.global_misses;
+    std::uint64_t raw_memory = 0, raw_storage = 0, raw_misses = 0;
     for (std::size_t position = 0; position < hash_count; ++position) {
         const auto [node_id, created] = parent_id.has_value()
                                             ? tree_.get_or_create(
@@ -171,6 +172,11 @@ void Simulator::process_request(
             node_id,
             parent_id,
         });
+        if (request_diagnostics_.is_open()) {
+            if (result == AccessResult::GlobalMiss) { ++raw_misses; }
+            else if (result == AccessResult::MemoryHit) { ++raw_memory; }
+            else { ++raw_storage; }
+        }
         prefix_hit = prefix_hit && result != AccessResult::GlobalMiss;
         metrics_.record_access(prefix_hit ? result : AccessResult::GlobalMiss);
         if (prefix_hit) { ++hit_blocks; }
@@ -180,6 +186,10 @@ void Simulator::process_request(
         shadow_->record_request(hit_blocks, ghost_prefix > hit_blocks ? ghost_prefix - hit_blocks : 0);
     }
     metrics_.compute_cost += (metrics_.global_misses - misses_before) * hash_count;
+    if (request_diagnostics_.is_open()) {
+        request_diagnostics_ << request_id << ',' << raw_memory << ',' << raw_storage << ','
+            << raw_misses << ',' << (metrics_.global_misses - misses_before) << '\n';
+    }
     {
         MemoryTimer timer(config_.profile_memory, memory_maintenance_ns);
         memory_policy_->on_request_end(request, tree_);
@@ -199,6 +209,15 @@ void Simulator::process_request(
         hash_ids.data(),
         hash_ids.size()
     );
+}
+
+void Simulator::enable_request_diagnostics(const std::string& path) {
+    if (next_access_sequence_ != 0 || finished_) {
+        throw std::invalid_argument("request diagnostics must start before replay");
+    }
+    request_diagnostics_.exceptions(std::ios::failbit | std::ios::badbit);
+    request_diagnostics_.open(path);
+    request_diagnostics_ << "request_id,memory_hits,storage_hits,raw_misses,prefix_misses\n";
 }
 
 void Simulator::enable_memory_diagnostics(const std::string& path) {
@@ -232,6 +251,7 @@ void Simulator::finish(TimestampNs simulation_end_ns) {
         controller_windows_.close();
     }
     if (memory_diagnostics_.is_open()) { memory_diagnostics_.close(); }
+    if (request_diagnostics_.is_open()) { request_diagnostics_.close(); }
     finished_ = true;
 }
 

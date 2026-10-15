@@ -32,12 +32,13 @@ def digest(path):
 
 def measure(args, job):
     memory = MemoryPolicyConfig(
-        kind="context_lru", alpha=args.alpha, admit_storage_hits=False,
+        kind=args.policy, alpha=args.alpha, admit_storage_hits=False,
         retention_ns=None if job["retention_s"] is None else int(job["retention_s"] * 1e9),
         retention_growth_seconds_per_block=job["beta"],
         eviction_gap_reference_ns=None if job["gap_s"] is None else int(job["gap_s"] * 1e9),
         eviction_base_blocks=args.base_blocks,
-        max_eviction_blocks=args.max_blocks if job["gap_s"] is not None else args.base_blocks,
+        max_eviction_blocks=(None if args.policy == "indexed_lru" else
+                             args.max_blocks if job["gap_s"] is not None else args.base_blocks),
     )
     cfg = SimulationConfig(
         memory=MemoryConfig(args.memory_blocks * 8 * 1024**2), block_size_bytes=8 * 1024**2,
@@ -65,7 +66,7 @@ def run_phase(args, jobs):
         command = [sys.executable, __file__, "--dataset", str(args.dataset), "--output",
                    str(args.output), "--memory-blocks", str(args.memory_blocks), "--alpha",
                    str(args.alpha), "--base-blocks", str(args.base_blocks), "--max-blocks",
-                   str(args.max_blocks), "--job", json.dumps(job)]
+                   str(args.max_blocks), "--policy", args.policy, "--job", json.dumps(job)]
         if args.diagnostics:
             command.append("--diagnostics")
         with (args.output / f"{job['name']}.log").open("w") as log:
@@ -105,14 +106,16 @@ def report(args, results):
         writer = csv.DictWriter(target, fieldnames=rows[0])
         writer.writeheader()
         writer.writerows(rows)
-    lines = ["# Adaptive context_lru sweep", "",
+    lines = [f"# {args.policy} sweep", "",
              f"Memory {args.memory_blocks} blocks, 8 MiB/block; alpha={args.alpha}; admission off.",
              f"Base retention={args.retentions_s or args.retention_s}s; base grain={args.base_blocks}. "
-             + ("Dynamic grain disabled; fixed cap equals base grain." if args.retentions_s else
+             + ("indexed_lru has no grain cap or alpha candidate budget." if args.policy == "indexed_lru" else
+                "Dynamic grain disabled; fixed cap equals base grain." if args.retentions_s else
                 f"Dynamic grain hard max={args.max_blocks}."),
              "Hit rate is the continuous-prefix Memory + Storage block hit rate. Each run starts cold.",
              "Stages run sequentially; jobs within a stage run concurrently. Timing is not a performance comparison.",
-             ("Retention grid uses fixed grain and all retention/beta combinations." if args.retentions_s else
+             ("indexed_lru uses whole segments with parent reclamation on Dump." if args.policy == "indexed_lru" else
+              "Retention grid uses fixed grain and all retention/beta combinations." if args.retentions_s else
               "Combined stage uses the two best nonzero betas and two best gap references from prior stages."),
              "This is selection on one trace, not held-out validation or a complete parameter grid.", "",
              "| stage | retention s | beta s/block | gap reference s | hit % | baseline % | Drop blocks | Evicted blocks | Drop / evicted % | WRITE blocks | Write reduction % |",
@@ -130,6 +133,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--dataset", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--policy", choices=("context_lru", "indexed_lru"), default="context_lru")
     parser.add_argument("--memory-blocks", type=int, default=16384)
     parser.add_argument("--alpha", type=float, default=.01)
     parser.add_argument("--retentions-s", help="Comma-separated retention grid; skips grain stages")
@@ -142,6 +146,10 @@ def main():
     parser.add_argument("--diagnostics", action="store_true", help="Record block evictions for offline analysis")
     parser.add_argument("--job", help=argparse.SUPPRESS)
     args = parser.parse_args()
+    if args.policy == "indexed_lru" and not args.job and (
+        not args.retentions_s or any(float(b) != 0 for b in args.betas.split(","))
+    ):
+        parser.error("indexed_lru requires --retentions-s and --betas 0")
     args.output.mkdir(parents=True, exist_ok=True)
     if args.job:
         measure(args, json.loads(args.job))

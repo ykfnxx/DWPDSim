@@ -164,3 +164,24 @@ def test_env_wear_balanced_shadow_reaches_native_policy(monkeypatch, tmp_path):
     assert stats["algorithm"]["learned_idle_multiplier"] == 24
     assert stats["algorithm"]["feedback_windows"] == 1
     assert stats["shadow_ftl"]["slc"]["host_program_pages"] > 0
+
+
+def test_env_reuse_model_reaches_native_policy(monkeypatch, tmp_path):
+    import json
+
+    configure(monkeypatch, tmp_path, "300000000000")
+    model = tmp_path / "model.json"
+    model.write_text(json.dumps({"reuse_edges_s": [0, 60, 3600],
+                                "reuse_survival": [[1, 1, 1]] * 9,
+                                "reuse_prefix_keep": [[[1, 0.8, 0.5]] * 2] * 9}))
+    monkeypatch.setenv("DWPDSIM_MEMORY_POLICY", "reuse_lru")
+    monkeypatch.setenv("DWPDSIM_MEMORY_REUSE_MODEL_PATH", str(model))
+    monkeypatch.setenv("DWPDSIM_MEMORY_REUSE_DUMP_PROBABILITY", "0.5")
+    monkeypatch.setenv("DWPDSIM_MEMORY_REUSE_PRIORITY", "true")
+    monkeypatch.setenv("DWPDSIM_MEMORY_REUSE_COST_WEIGHTED", "true")
+    monkeypatch.setenv("DWPDSIM_MEMORY_REUSE_RECOMPUTE_WEIGHT", "2")
+    cfg = runpy.run_path(str(ROOT / "example/run_pipeline.py"))["simulation_config"]()
+    with DWPDSimulator(cfg, tmp_path / "reuse.csv") as sim:
+        sim.process(0, 0, 1, [1, 2])
+        sim.process(10**9, 1, 2, [3])
+    assert sim.stats()["memory"]["drop_blocks"] == 2

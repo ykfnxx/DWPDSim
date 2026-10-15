@@ -423,7 +423,17 @@ PYBIND11_MODULE(_core, module) {
                          std::uint64_t min_reuse_blocks,
                          std::uint64_t reuse_ema_scale_blocks,
                          std::uint64_t shadow_slc_physical_blocks,
-                         std::uint64_t shadow_tlc_physical_blocks
+                         std::uint64_t shadow_tlc_physical_blocks,
+                         std::vector<double> memory_reuse_edges_s,
+                         std::vector<std::vector<double>> memory_reuse_survival,
+                         std::optional<double> memory_reuse_dump_probability,
+                         bool memory_reuse_priority,
+                         std::optional<double> memory_reuse_admit_probability,
+                         double memory_reuse_short_horizon_s,
+                         double memory_reuse_long_horizon_s,
+                         std::vector<std::vector<std::vector<double>>> memory_reuse_prefix_keep,
+                         bool memory_reuse_cost_weighted,
+                         double memory_reuse_recompute_weight
                      ) {
                 if (slc_host_share <= 0.0 || slc_host_share >= 1.0) {
                     throw py::value_error("slc_host_share must be between 0 and 1");
@@ -438,8 +448,8 @@ PYBIND11_MODULE(_core, module) {
                     (memory_retention_growth_seconds_per_block != 0 || memory_eviction_gap_reference_ns)) {
                     throw py::value_error("adaptive memory parameters require context_lru");
                 }
-                if (memory_max_eviction_blocks && memory_policy != "context_lru") {
-                    throw py::value_error("max_eviction_blocks requires context_lru");
+                if (memory_max_eviction_blocks && memory_policy != "context_lru" && memory_policy != "reuse_lru") {
+                    throw py::value_error("max_eviction_blocks requires context_lru or reuse_lru");
                 }
                 std::unique_ptr<MemoryPolicy> memory;
                 if (memory_policy == "baseline_lru") {
@@ -452,6 +462,18 @@ PYBIND11_MODULE(_core, module) {
                     memory = std::make_unique<IndexedMemoryLruPolicy>(
                         admit_storage_hits, memory_groups, memory_sampled_groups,
                         memory_workers, memory_seed, memory_retention_ns);
+                } else if (memory_policy == "reuse_lru") {
+                    if (memory_groups != 1 || memory_sampled_groups != 0 || memory_workers != 1 ||
+                        config.block_size_bytes == 0) {
+                        throw py::value_error("reuse_lru requires positive block size and single exact group");
+                    }
+                    memory = std::make_unique<ReuseMemoryLruPolicy>(admit_storage_hits,
+                        config.memory.capacity_bytes / config.block_size_bytes, memory_alpha,
+                        memory_retention_ns, memory_max_eviction_blocks, memory_reuse_edges_s,
+                        memory_reuse_survival, memory_reuse_dump_probability, memory_reuse_priority,
+                        memory_reuse_admit_probability, memory_reuse_short_horizon_s,
+                        memory_reuse_long_horizon_s, memory_reuse_prefix_keep,
+                        memory_reuse_cost_weighted, memory_reuse_recompute_weight);
                 } else if (memory_policy == "context_lru") {
                     if (memory_groups != 1 || memory_sampled_groups != 0 || memory_workers != 1) {
                         throw py::value_error("context_lru requires groups=1, sampled_groups=0, workers=1");
@@ -465,7 +487,7 @@ PYBIND11_MODULE(_core, module) {
                         memory_retention_growth_seconds_per_block, memory_eviction_gap_reference_ns,
                         memory_eviction_base_blocks);
                 } else {
-                    throw py::value_error("memory policy must be 'baseline_lru', 'indexed_lru' or 'context_lru'");
+                    throw py::value_error("memory policy must be 'baseline_lru', 'indexed_lru', 'context_lru' or 'reuse_lru'");
                 }
                 const WearShareRoundRobinPolicyConfig round_robin{
                     slc_host_share,
@@ -565,7 +587,17 @@ PYBIND11_MODULE(_core, module) {
             py::arg("min_reuse_blocks") = 4096ULL,
             py::arg("reuse_ema_scale_blocks") = 50000ULL,
             py::arg("shadow_slc_physical_blocks") = 0ULL,
-            py::arg("shadow_tlc_physical_blocks") = 0ULL
+            py::arg("shadow_tlc_physical_blocks") = 0ULL,
+            py::arg("memory_reuse_edges_s") = std::vector<double>{},
+            py::arg("memory_reuse_survival") = std::vector<std::vector<double>>{},
+            py::arg("memory_reuse_dump_probability") = py::none(),
+            py::arg("memory_reuse_priority") = false,
+            py::arg("memory_reuse_admit_probability") = py::none(),
+            py::arg("memory_reuse_short_horizon_s") = 60.0,
+            py::arg("memory_reuse_long_horizon_s") = 3600.0,
+            py::arg("memory_reuse_prefix_keep") = std::vector<std::vector<std::vector<double>>>{},
+            py::arg("memory_reuse_cost_weighted") = false,
+            py::arg("memory_reuse_recompute_weight") = 1.0
         )
         .def("storage_performance", [](const Simulator& simulator) {
             py::dict result;
@@ -583,6 +615,7 @@ PYBIND11_MODULE(_core, module) {
             return result;
         })
         .def("enable_memory_diagnostics", &Simulator::enable_memory_diagnostics)
+        .def("enable_request_diagnostics", &Simulator::enable_request_diagnostics)
         .def("memory_performance", [](const Simulator& simulator) {
             py::dict result;
             const auto work = simulator.memory_policy_work();
@@ -594,6 +627,8 @@ PYBIND11_MODULE(_core, module) {
             result["topology_member_moves"] = work.topology_member_moves;
             result["ancestor_updates"] = work.ancestor_updates;
             result["worker_rounds"] = work.worker_rounds;
+            result["evicted_idle_bins"] = work.evicted_idle_bins;
+            result["evicted_residency_bins"] = work.evicted_residency_bins;
             result["indexed_segments"] = work.indexed_segments;
             result["indexed_residents"] = work.indexed_residents;
             result["ancestor_entries"] = work.ancestor_entries;

@@ -44,6 +44,7 @@ class Simulator {
     );
 
     void enable_memory_diagnostics(const std::string& path);
+    void enable_request_diagnostics(const std::string& path);
     void finish();
     void finish(TimestampNs simulation_end_ns);
 
@@ -131,6 +132,7 @@ class Simulator {
     MetricsCollector metrics_;
     TraceWriter trace_writer_;
     std::ofstream memory_diagnostics_;
+    std::ofstream request_diagnostics_;
     std::unique_ptr<ShadowFtl> shadow_;
     std::ofstream controller_windows_;
     TimestampNs feedback_period_ns_ = 0, next_feedback_ns_ = 0;

@@ -61,6 +61,16 @@ class DWPDSimulator:
             memory_retention_growth_seconds_per_block=memory.retention_growth_seconds_per_block,
             memory_eviction_gap_reference_ns=memory.eviction_gap_reference_ns,
             memory_eviction_base_blocks=memory.eviction_base_blocks,
+            memory_reuse_edges_s=memory.reuse_edges_s,
+            memory_reuse_survival=memory.reuse_survival,
+            memory_reuse_dump_probability=memory.reuse_dump_probability,
+            memory_reuse_priority=memory.reuse_priority,
+            memory_reuse_admit_probability=memory.reuse_admit_probability,
+            memory_reuse_short_horizon_s=memory.reuse_short_horizon_s,
+            memory_reuse_long_horizon_s=memory.reuse_long_horizon_s,
+            memory_reuse_prefix_keep=memory.reuse_prefix_keep,
+            memory_reuse_cost_weighted=memory.reuse_cost_weighted,
+            memory_reuse_recompute_weight=memory.reuse_recompute_weight,
             storage_policy=storage.kind,
             rr_victim_search=storage.rr_victim_search,
             rr_subtree_counts=storage.rr_subtree_counts,
@@ -165,6 +175,10 @@ class DWPDSimulator:
     def storage_performance(self) -> dict[str, int]:
         """RR query/maintenance counters; timers require rr_profile=True."""
         return self._core.storage_performance()
+
+    def enable_request_diagnostics(self, path: str | PathLike[str]) -> None:
+        """Write per-request physical hit counts and continuous-prefix misses."""
+        self._core.enable_request_diagnostics(str(path))
 
     def enable_memory_diagnostics(self, path: str | PathLike[str]) -> None:
         """Stream per-block evictions for offline diagnosis in infinite_storage mode."""

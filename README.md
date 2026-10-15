@@ -25,6 +25,8 @@ placement、淘汰与迁移。C++17 core 是逻辑状态、pool-local 地址、�
 
 DWPDSim 不模拟 SSD 内部 GC、NAND latency、擦除或物理写放大；这些由下游 MQSim 计算。
 
+实验性 `reuse_lru` 的决策、配置和时间切分实验见 [历史复用策略实验](docs/reuse-policy.md)。
+
 ## 安装与验证
 
 需要 Python 3.11+、CMake 3.18+ 和 C++17 编译器：
@@ -118,6 +120,8 @@ simulator.process_batch(
 批量和逐请求接口产生相同的 tick、决策、trace 和 metrics。
 
 ## Policy
+
+Memory策略说明见[indexed_lru与context_lru](docs/memory-policies.md)。
 
 顶层接口只有 `MemoryPolicy` 和 `StoragePolicy`：
 
@@ -484,6 +488,13 @@ python3 benchmark/memory_ablation.py --dataset input.parquet --output build/perf
 精确模式业务结果相同及近似模式可重复；每次计算哈希后删除大 trace，保留 JSON 结果。
 设计与实测结论见 [Memory 性能文档](.design/perf/batched-input-and-segment-eviction.md) 和
 [消融报告](.design/perf/memory-ablation-report.md)。
+
+### indexed_lru 对照实验
+
+同一 sweep 可通过 `--policy indexed_lru --retentions-s 60,120,300,400,500,600 --betas 0`
+运行固定 retention 对照，其他输入、容量参数保持一致。indexed_lru 使用自身的整段淘汰规则，
+不使用 context_lru 的 alpha 候选预算、段内上限或自适应参数。
+写入减少比例按各 policy 自己关闭 retention 的 baseline 计算。
 
 ### Memory Drop 诊断
 

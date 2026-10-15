@@ -71,6 +71,8 @@ def simulation_config() -> SimulationConfig:
     retention_ns = optional_int("DWPDSIM_MEMORY_RETENTION_NS")
     if retention_ns is not None and not 0 <= retention_ns <= 2**64 - 1:
         raise ValueError("DWPDSIM_MEMORY_RETENTION_NS must be a nonnegative uint64 or empty")
+    model_path = os.environ.get("DWPDSIM_MEMORY_REUSE_MODEL_PATH", "")
+    reuse_model = json.loads((ROOT / model_path).read_text()) if model_path else {}
     return SimulationConfig(
         block_size_bytes=int(required("DWPDSIM_BLOCK_SIZE_BYTES")),
         memory=MemoryConfig(capacity_bytes=int(required("DWPDSIM_MEMORY_CAPACITY_BYTES"))),
@@ -92,6 +94,16 @@ def simulation_config() -> SimulationConfig:
                 "DWPDSIM_MEMORY_RETENTION_GROWTH_SECONDS_PER_BLOCK", "0")),
             eviction_gap_reference_ns=optional_int("DWPDSIM_MEMORY_EVICTION_GAP_REFERENCE_NS"),
             eviction_base_blocks=int(os.environ.get("DWPDSIM_MEMORY_EVICTION_BASE_BLOCKS", "64")),
+            reuse_edges_s=reuse_model.get("reuse_edges_s", []),
+            reuse_survival=reuse_model.get("reuse_survival", []),
+            reuse_prefix_keep=reuse_model.get("reuse_prefix_keep", []),
+            reuse_cost_weighted=boolean("DWPDSIM_MEMORY_REUSE_COST_WEIGHTED", "false"),
+            reuse_recompute_weight=float(os.environ.get("DWPDSIM_MEMORY_REUSE_RECOMPUTE_WEIGHT", "1")),
+            reuse_dump_probability=optional_float("DWPDSIM_MEMORY_REUSE_DUMP_PROBABILITY"),
+            reuse_priority=boolean("DWPDSIM_MEMORY_REUSE_PRIORITY", "false"),
+            reuse_admit_probability=optional_float("DWPDSIM_MEMORY_REUSE_ADMIT_PROBABILITY"),
+            reuse_short_horizon_s=float(os.environ.get("DWPDSIM_MEMORY_REUSE_SHORT_HORIZON_S", "60")),
+            reuse_long_horizon_s=float(os.environ.get("DWPDSIM_MEMORY_REUSE_LONG_HORIZON_S", "3600")),
         ),
         storage_policy=StoragePolicyConfig(
             kind=required("DWPDSIM_STORAGE_POLICY"),
