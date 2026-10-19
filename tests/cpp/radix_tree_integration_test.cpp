@@ -1,11 +1,21 @@
 #include <cassert>
 #include <cstdint>
 #include <limits>
+#include <type_traits>
+#include <utility>
 #include <vector>
 
 #include "dwpdsim/radix_tree.hpp"
 
 int main() {
+    // Legacy aggregate initialization and copy/assignment are public contracts.
+    dwpdsim::Node legacy{42, 10};
+    const auto copied_node = legacy;
+    assert(copied_node.hash_id == 42);
+    assert(copied_node.first_seen_timestamp_ns == 10);
+    assert(!copied_node.hybrid);
+    legacy = copied_node;
+
     dwpdsim::RadixTree tree;
 
     const auto [zero, created_zero] = tree.get_or_create_root(0, 10);
@@ -72,6 +82,24 @@ int main() {
     assert(tree.node(recreated).access_count == 0);
     assert(tree.node(recreated).first_seen_timestamp_ns == 50);
     assert(tree.size() == 6);
+
+    const auto legacy_tree_copy = tree;
+    dwpdsim::RadixTree assigned_tree;
+    assigned_tree = legacy_tree_copy;
+    assigned_tree.node(first).in_memory = true;
+    assert(!tree.node(first).in_memory);
+    assert(assigned_tree.parent(first) == tree.parent(first));
+
+    tree.node(first).hybrid.ensure().components[1].in_dram = true;
+    auto hybrid_tree_copy = tree;
+    hybrid_tree_copy.node(first).hybrid->components[1].in_dram = false;
+    assert(tree.node(first).hybrid->components[1].in_dram);
+    assigned_tree = hybrid_tree_copy;
+    assigned_tree.node(first).hybrid->components[1].in_dram = true;
+    assert(!hybrid_tree_copy.node(first).hybrid->components[1].in_dram);
+    static_assert(std::is_same_v<
+        decltype(std::as_const(tree).node(first).hybrid.operator->()),
+        const dwpdsim::HybridNodeState*>);
 
     return 0;
 }

@@ -27,6 +27,12 @@ DWPDSim 不模拟 SSD 内部 GC、NAND latency、擦除或物理写放大；这�
 
 实验性 `reuse_lru` 的决策、配置和时间切分实验见 [历史复用策略实验](docs/reuse-policy.md)。
 
+## 混合注意力 backend 回放
+
+通过 `SimulationConfig.hybrid_attention.enabled=True` 显式开启，默认关闭并保持原有行为。
+当前支持公共 hash RadixTree、独立 FULL/LINEAR DRAM 池、显式需求/发布、checkpoint 淘汰和同步无限后备存储。
+配置、事件格式、批处理及证据边界见 [混合注意力使用说明](docs/hybrid-attention-usage.md)。
+
 ## 安装与验证
 
 需要 Python 3.11+、CMake 3.18+ 和 C++17 编译器：

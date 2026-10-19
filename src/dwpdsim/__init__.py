@@ -1,6 +1,7 @@
 """DWPDSim public Python API."""
 
 from dwpdsim.config import (
+    HybridAttentionConfig,
     MemoryConfig,
     MemoryPolicyConfig,
     SimulationConfig,
@@ -15,11 +16,13 @@ from dwpdsim.input import (
     parquet_batches,
     replay_batches,
 )
-from dwpdsim.models import Request
+from dwpdsim.models import HybridEvent, Request
 from dwpdsim.simulator import DWPDSimulator
 
 __all__ = [
     "DWPDSimulator",
+    "HybridAttentionConfig",
+    "HybridEvent",
     "InputConfig",
     "MemoryConfig",
     "MemoryPolicyConfig",

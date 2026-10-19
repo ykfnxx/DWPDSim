@@ -5,6 +5,8 @@
 #include <limits>
 #include <optional>
 
+#include "dwpdsim/hybrid_types.hpp"
+
 namespace dwpdsim {
 
 using HashId = std::uint64_t;
@@ -100,6 +102,7 @@ struct Node {
     bool has_last_hit = false;
     // Dump initializes this; a storage hit touches all same-tier segment residents.
     TimestampNs storage_last_access_timestamp_ns = 0;
+    HybridNodeStorage hybrid;
 
     StorageLocation storage_location() const noexcept {
         return StorageLocation{storage_tier, storage_block_address, storage_stream_id};

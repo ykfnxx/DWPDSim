@@ -11,6 +11,8 @@ from dotenv import load_dotenv
 
 from dwpdsim import (
     DWPDSimulator,
+    HybridAttentionConfig,
+    HybridEvent,
     MemoryConfig,
     MemoryPolicyConfig,
     Request,
@@ -84,6 +86,20 @@ def simulation_config() -> SimulationConfig:
             capacity_bytes=int(required("DWPDSIM_TLC_CAPACITY_BYTES")),
             stream_count=int(required("DWPDSIM_TLC_STREAM_COUNT")),
         ),
+        hybrid_attention=HybridAttentionConfig(
+            enabled=boolean("DWPDSIM_HYBRID_ENABLED", "false"),
+            full_capacity_bytes=int(os.environ.get("DWPDSIM_HYBRID_FULL_CAPACITY_BYTES", "0")),
+            linear_capacity_bytes=int(os.environ.get("DWPDSIM_HYBRID_LINEAR_CAPACITY_BYTES", "0")),
+            full_block_bytes=int(os.environ.get("DWPDSIM_HYBRID_FULL_BLOCK_BYTES", "0")),
+            linear_checkpoint_bytes=int(os.environ.get("DWPDSIM_HYBRID_LINEAR_CHECKPOINT_BYTES", "0")),
+            full_policy=os.environ.get("DWPDSIM_HYBRID_FULL_POLICY", "segment_lru"),
+            linear_policy=os.environ.get("DWPDSIM_HYBRID_LINEAR_POLICY", "checkpoint_lru"),
+            alpha=float(os.environ.get("DWPDSIM_HYBRID_ALPHA", "0.1")),
+            decay_seconds=float(os.environ.get("DWPDSIM_HYBRID_DECAY_SECONDS", "60")),
+            linear_read_cost=float(os.environ.get("DWPDSIM_HYBRID_LINEAR_READ_COST", "1")),
+            admit_storage_hits=boolean("DWPDSIM_HYBRID_ADMIT_STORAGE_HITS", "true"),
+            dump_on_eviction=boolean("DWPDSIM_HYBRID_DUMP_ON_EVICTION", "true"),
+        ),
         memory_policy=MemoryPolicyConfig(
             kind=required("DWPDSIM_MEMORY_POLICY"),
             admit_storage_hits=boolean("DWPDSIM_ADMIT_STORAGE_HITS"),
@@ -143,6 +159,13 @@ def simulation_config() -> SimulationConfig:
     )
 
 
+def read_hybrid_events(path: Path) -> Iterator[HybridEvent]:
+    with path.open(encoding="utf-8") as source:
+        for line in source:
+            if line.strip():
+                yield HybridEvent(**json.loads(line))
+
+
 def main() -> None:
     if not ENV_PATH.is_file():
         raise FileNotFoundError(
@@ -159,7 +182,10 @@ def main() -> None:
     config = simulation_config()
     simulator = DWPDSimulator(config, trace_path)
     with simulator:
-        simulator.run(read_requests(configured_path("DWPDSIM_REQUESTS_PATH")))
+        if config.hybrid_attention.enabled:
+            simulator.run_hybrid(read_hybrid_events(configured_path("DWPDSIM_REQUESTS_PATH")))
+        else:
+            simulator.run(read_requests(configured_path("DWPDSIM_REQUESTS_PATH")))
     simulator.write_stats(metrics_path)
 
     if config.storage_policy.kind == "infinite_storage":

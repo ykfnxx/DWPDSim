@@ -363,9 +363,45 @@ PYBIND11_MODULE(_core, module) {
         .def_readwrite("capacity_bytes", &StorageTierConfig::capacity_bytes)
         .def_readwrite("stream_count", &StorageTierConfig::stream_count);
 
+    py::class_<HybridAttentionConfig>(module, "HybridAttentionConfig")
+        .def(py::init<>())
+        .def_readwrite("enabled", &HybridAttentionConfig::enabled)
+        .def_readwrite("full_capacity_bytes", &HybridAttentionConfig::full_capacity_bytes)
+        .def_readwrite("linear_capacity_bytes", &HybridAttentionConfig::linear_capacity_bytes)
+        .def_readwrite("full_block_bytes", &HybridAttentionConfig::full_block_bytes)
+        .def_readwrite("linear_checkpoint_bytes", &HybridAttentionConfig::linear_checkpoint_bytes)
+        .def_readwrite("full_policy", &HybridAttentionConfig::full_policy)
+        .def_readwrite("linear_policy", &HybridAttentionConfig::linear_policy)
+        .def_readwrite("alpha", &HybridAttentionConfig::alpha)
+        .def_readwrite("decay_seconds", &HybridAttentionConfig::decay_seconds)
+        .def_readwrite("linear_read_cost", &HybridAttentionConfig::linear_read_cost)
+        .def_readwrite("admit_storage_hits", &HybridAttentionConfig::admit_storage_hits)
+        .def_readwrite("dump_on_eviction", &HybridAttentionConfig::dump_on_eviction);
+
+    py::class_<HybridEvent>(module, "HybridEvent")
+        .def(py::init<>())
+        .def_readwrite("timestamp_ns", &HybridEvent::timestamp_ns)
+        .def_readwrite("sequence", &HybridEvent::sequence)
+        .def_readwrite("action", &HybridEvent::action)
+        .def_readwrite("hash_ids", &HybridEvent::hash_ids)
+        .def_readwrite("request_id", &HybridEvent::request_id)
+        .def_readwrite("components", &HybridEvent::components)
+        .def_readwrite("restore_blocks", &HybridEvent::restore_blocks)
+        .def_readwrite("size_bytes", &HybridEvent::size_bytes);
+
+    py::class_<HybridResult>(module, "HybridResult")
+        .def_readonly("sequence", &HybridResult::sequence)
+        .def_readonly("request_id", &HybridResult::request_id)
+        .def_readonly("restore_blocks", &HybridResult::restore_blocks)
+        .def_readonly("full", &HybridResult::full)
+        .def_readonly("linear", &HybridResult::linear)
+        .def_readonly("all_available", &HybridResult::all_available)
+        .def_readonly("all_dram", &HybridResult::all_dram);
+
     py::class_<SimulationConfig>(module, "SimulationConfig")
         .def(py::init<>())
         .def_readwrite("block_size_bytes", &SimulationConfig::block_size_bytes)
+        .def_readwrite("hybrid_attention", &SimulationConfig::hybrid_attention)
         .def_readwrite("memory", &SimulationConfig::memory)
         .def_readwrite("profile_memory", &SimulationConfig::profile_memory)
         .def_readwrite("slc", &SimulationConfig::slc)
@@ -712,6 +748,120 @@ PYBIND11_MODULE(_core, module) {
                 }
             }
         )
+        .def("process_hybrid_event", &Simulator::process_hybrid_event,
+            py::call_guard<py::gil_scoped_release>())
+        .def("process_hybrid_events", [](Simulator& simulator, const std::vector<HybridEvent>& events) {
+            simulator.hybrid_stats();
+            std::vector<HybridResult> results;
+            py::gil_scoped_release release;
+            for (const auto& event : events) {
+                auto result = simulator.process_hybrid_event(event);
+                if (result) { results.push_back(std::move(*result)); }
+            }
+            return results;
+        })
+        .def("process_hybrid_batch", [](Simulator& simulator, const py::buffer& timestamps,
+            const py::buffer& sequences, const py::buffer& actions, const py::buffer& components,
+            const py::buffer& request_ids, const py::buffer& restore_blocks, const py::buffer& sizes,
+            const py::buffer& offsets, const py::buffer& hashes) {
+            simulator.hybrid_stats();
+            // One validation/dispatch per columnar batch; no per-block Python callback.
+            const auto t = require_u64_buffer(timestamps, "timestamps");
+            const auto seq = require_u64_buffer(sequences, "sequences");
+            const auto act = require_u64_buffer(actions, "actions");
+            const auto comp = require_u64_buffer(components, "components");
+            const auto req = require_u64_buffer(request_ids, "request_ids");
+            const auto boundary = require_u64_buffer(restore_blocks, "restore_blocks");
+            const auto size = require_u64_buffer(sizes, "sizes");
+            const auto off = require_u64_buffer(offsets, "offsets");
+            const auto hash = require_u64_buffer(hashes, "hashes");
+            const auto n = t.shape[0];
+            for (const auto* column : {&seq, &act, &comp, &req, &boundary, &size}) {
+                if (column->shape[0] != n) { throw py::value_error("hybrid column lengths must match"); }
+            }
+            if (off.shape[0] != n + 1) { throw py::value_error("offsets length must be event_count + 1"); }
+            const auto* o = static_cast<const std::uint64_t*>(off.ptr);
+            const auto* a = static_cast<const std::uint64_t*>(act.ptr);
+            const auto* c = static_cast<const std::uint64_t*>(comp.ptr);
+            if (o[0] != 0 || o[n] != static_cast<std::uint64_t>(hash.shape[0])) {
+                throw py::value_error("offsets must span the hashes buffer");
+            }
+            for (py::ssize_t i = 0; i < n; ++i) {
+                if (o[i] >= o[i + 1] || a[i] > 2 || c[i] > 2) {
+                    throw py::value_error("invalid offsets or hybrid event code");
+                }
+            }
+            const auto* h = static_cast<const std::uint64_t*>(hash.ptr);
+            std::vector<HybridResult> results;
+            py::gil_scoped_release release;
+            for (py::ssize_t i = 0; i < n; ++i) {
+                HybridEvent e;
+                e.timestamp_ns = static_cast<const std::uint64_t*>(t.ptr)[i];
+                e.sequence = static_cast<const std::uint64_t*>(seq.ptr)[i];
+                e.action = a[i] == 0 ? "observe" : a[i] == 1 ? "publish" : "request";
+                e.components = c[i] == 0 ? "full" : c[i] == 1 ? "linear" : "both";
+                e.request_id = static_cast<const std::uint64_t*>(req.ptr)[i];
+                e.restore_blocks = static_cast<const std::uint64_t*>(boundary.ptr)[i];
+                e.size_bytes = static_cast<const std::uint64_t*>(size.ptr)[i];
+                e.hash_ids.assign(h + o[i], h + o[i + 1]);
+                auto result = simulator.process_hybrid_event(e);
+                if (result) { results.push_back(std::move(*result)); }
+            }
+            return results;
+        })
+        .def("hybrid_inspect", [](const Simulator& simulator, NodeId id, const std::string& kind) {
+            if (kind != "full" && kind != "linear") { throw py::value_error("component must be full or linear"); }
+            const auto* c = simulator.hybrid_component(id, kind == "full" ? 0 : 1);
+            py::dict result;
+            result["published"] = c && c->published;
+            result["in_dram"] = c && c->in_dram;
+            result["on_storage"] = c && !c->storage_addresses.empty();
+            result["size_bytes"] = c ? c->size_bytes : 0;
+            result["demands"] = c ? c->demands : 0;
+            result["last_demand_ns"] = c ? c->last_demand_ns : 0;
+            result["storage_addresses"] = c ? c->storage_addresses : std::vector<std::uint64_t>{};
+            return result;
+        })
+        .def("hybrid_stats", [](const Simulator& simulator) {
+            const auto& state = simulator.hybrid_stats();
+            py::dict result;
+            result["schema_version"] = 1;
+            result["io_events"] = state.io_sequence;
+            result["requests"] = state.requests;
+            result["all_available_requests"] = state.all_available_requests;
+            result["all_dram_requests"] = state.all_dram_requests;
+            result["joint_requests"] = state.joint_requests;
+            result["joint_available"] = state.joint_available;
+            result["joint_dram"] = state.joint_dram;
+            result["tree_nodes"] = simulator.tree().size();
+            for (std::size_t k = 0; k < 2; ++k) {
+                const auto& c = state.counters[k];
+                py::dict row;
+                row["demands"] = c.demands;
+                row["dram_hits"] = c.dram_hits;
+                row["storage_hits"] = c.storage_hits;
+                row["never_published_misses"] = c.never_published_misses;
+                row["lost_misses"] = c.lost_misses;
+                row["publications"] = c.publications;
+                row["published_bytes"] = c.published_bytes;
+                row["resident_bytes"] = c.resident_bytes;
+                row["peak_resident_bytes"] = c.peak_resident_bytes;
+                row["resident_objects"] = c.resident_objects;
+                row["storage_bytes"] = c.storage_bytes;
+                row["storage_allocated_bytes"] = c.storage_allocated_bytes;
+                row["read_objects"] = c.read_objects;
+                row["read_bytes"] = c.read_bytes;
+                row["read_allocated_bytes"] = c.read_allocated_bytes;
+                row["write_objects"] = c.write_objects;
+                row["write_bytes"] = c.write_bytes;
+                row["write_allocated_bytes"] = c.write_allocated_bytes;
+                row["evictions"] = c.evictions;
+                row["bypasses"] = c.bypasses;
+                row["candidates_examined"] = c.candidates_examined;
+                result[k == 0 ? "full" : "linear"] = row;
+            }
+            return result;
+        })
         .def("stats", &simulator_stats)
         .def(
             "finish",

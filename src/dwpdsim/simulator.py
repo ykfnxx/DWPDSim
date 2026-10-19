@@ -6,14 +6,16 @@ import json
 import logging
 import time
 from collections.abc import Iterable, Sequence
+from dataclasses import asdict
+from itertools import islice
 from os import PathLike
 from pathlib import Path
 from types import TracebackType
 from typing import Any, Self
 
 from dwpdsim import _core
-from dwpdsim.config import SimulationConfig
-from dwpdsim.models import Request
+from dwpdsim.config import MemoryPolicyConfig, SimulationConfig
+from dwpdsim.models import HybridEvent, Request
 
 logger = logging.getLogger(__name__)
 
@@ -34,6 +36,12 @@ class DWPDSimulator:
         core_config.simulation_end_ns = config.simulation_end_ns
         core_config.progress_interval_requests = config.progress_interval_requests
 
+        hybrid = _core.HybridAttentionConfig()
+        for key, value in asdict(config.hybrid_attention).items():
+            setattr(hybrid, key, value)
+        core_config.hybrid_attention = hybrid
+        if config.hybrid_attention.enabled and config.memory_policy != MemoryPolicyConfig():
+            raise ValueError("hybrid mode uses hybrid_attention policies; legacy memory_policy must be default")
         core_config.profile_memory = config.memory_policy.profile
         memory = config.memory_policy
         storage = config.storage_policy
@@ -172,6 +180,72 @@ class DWPDSimulator:
             )
         return self.stats()
 
+    @staticmethod
+    def _hybrid_event(event: HybridEvent):
+        if event.restore_blocks is not None and event.restore_blocks <= 0:
+            raise ValueError("restore_blocks must be positive or None")
+        if event.size_bytes is not None and event.size_bytes <= 0:
+            raise ValueError("size_bytes must be positive or None")
+        result = _core.HybridEvent()
+        for key in ("timestamp_ns", "sequence", "action", "hash_ids", "request_id",
+                    "components", "restore_blocks", "size_bytes"):
+            value = getattr(event, key)
+            setattr(result, key, 0 if value is None else value)
+        return result
+
+    @staticmethod
+    def _hybrid_result(result) -> dict[str, Any]:
+        return {key: getattr(result, key) for key in (
+            "sequence", "request_id", "restore_blocks", "full", "linear",
+            "all_available", "all_dram",
+        )}
+
+    def process_hybrid(self, event: HybridEvent) -> dict[str, Any] | None:
+        """Process an explicit component event; legacy mode rejects this API."""
+        result = self._core.process_hybrid_event(self._hybrid_event(event))
+        if result is not None:
+            self._processed_requests += 1
+            self._log_progress()
+        return None if result is None else self._hybrid_result(result)
+
+    def process_hybrid_events(self, events: Sequence[HybridEvent]) -> list[dict[str, Any]]:
+        """Replay an ordered event batch in C++, returning request results only."""
+        results = self._core.process_hybrid_events([self._hybrid_event(e) for e in events])
+        self._processed_requests += len(results)
+        self._log_progress()
+        return [self._hybrid_result(r) for r in results]
+
+    def process_hybrid_batch(
+        self, timestamps_ns: Any, sequences: Any, actions: Any, components: Any,
+        request_ids: Any, restore_blocks: Any, sizes: Any, offsets: Any, hash_ids: Any,
+    ) -> list[dict[str, Any]]:
+        """Replay contiguous uint64 columns: actions observe/publish/request=0/1/2,
+        components full/linear/both=0/1/2. Zero size/boundary uses configured defaults.
+        """
+        results = self._core.process_hybrid_batch(
+            timestamps_ns, sequences, actions, components, request_ids,
+            restore_blocks, sizes, offsets, hash_ids,
+        )
+        self._processed_requests += len(results)
+        self._log_progress()
+        return [self._hybrid_result(r) for r in results]
+
+    def run_hybrid(self, events: Iterable[HybridEvent], batch_events: int = 1024) -> dict[str, Any]:
+        """Bounded streaming replay; per-request results are not retained."""
+        if batch_events <= 0:
+            raise ValueError("batch_events must be positive")
+        source = iter(events)
+        while batch := list(islice(source, batch_events)):
+            self.process_hybrid_events(batch)
+        return self.hybrid_stats()
+
+    def hybrid_stats(self) -> dict[str, Any]:
+        return self._core.hybrid_stats()
+
+    def hybrid_inspect(self, hash_id: int, component: str) -> dict[str, Any]:
+        """Read component state without changing heat or residency."""
+        return self._core.hybrid_inspect(hash_id, component)
+
     def storage_performance(self) -> dict[str, int]:
         """RR query/maintenance counters; timers require rr_profile=True."""
         return self._core.storage_performance()
@@ -189,6 +263,8 @@ class DWPDSimulator:
         return self._core.memory_performance()
 
     def stats(self) -> dict[str, Any]:
+        if self.config.hybrid_attention.enabled:
+            return {"hybrid_attention": self.hybrid_stats()}
         return self._core.stats()
 
     def write_stats(self, path: str | PathLike[str]) -> None:
@@ -197,6 +273,10 @@ class DWPDSimulator:
     def finish(self) -> None:
         self._core.finish()
         stats = self.stats()
+        if self.config.hybrid_attention.enabled:
+            logger.info("finished hybrid replay requests=%d elapsed_s=%.3f",
+                        stats["hybrid_attention"]["requests"], time.perf_counter() - self._started_at)
+            return
         logger.info(
             "finished DWPDSim requests=%d accesses=%d hit_rate=%.6f trace_events=%d "
             "elapsed_s=%.3f",
@@ -231,6 +311,13 @@ class DWPDSimulator:
     def _log_progress(self) -> None:
         interval = self.config.progress_interval_requests
         if interval and self._processed_requests >= self._next_progress_request:
+            if self.config.hybrid_attention.enabled:
+                hybrid = self.hybrid_stats()
+                logger.info("DWPDSim hybrid progress requests=%d full_dram_bytes=%d linear_dram_bytes=%d",
+                            hybrid["requests"], hybrid["full"]["resident_bytes"],
+                            hybrid["linear"]["resident_bytes"])
+                self._next_progress_request = (self._processed_requests // interval + 1) * interval
+                return
             stats = self.stats()
             logger.info(
                 "DWPDSim progress requests=%d accesses=%d memory_blocks=%d "

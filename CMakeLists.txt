@@ -13,6 +13,8 @@ find_package(Threads REQUIRED)
 add_library(
     dwpdsim_core
     STATIC
+    cpp/src/hybrid_simulator.cpp
+    cpp/src/policies/memory/hybrid_memory_policy.cpp
     cpp/src/metrics.cpp
     cpp/src/shadow_ftl.cpp
     cpp/src/policies/memory/baseline_memory_lru_policy.cpp
@@ -48,6 +50,9 @@ install(
 option(DWPDSIM_BUILD_TESTS "Build C++ integration tests" OFF)
 if(DWPDSIM_BUILD_TESTS)
     enable_testing()
+    add_executable(hybrid_memory_integration_test tests/cpp/hybrid_memory_integration_test.cpp)
+    target_link_libraries(hybrid_memory_integration_test PRIVATE dwpdsim_core)
+    add_test(NAME hybrid_memory_integration_test COMMAND hybrid_memory_integration_test)
     add_executable(rr_storage_integration_test tests/cpp/rr_storage_integration_test.cpp)
     target_link_libraries(rr_storage_integration_test PRIVATE dwpdsim_core)
     add_test(NAME rr_storage_integration_test COMMAND rr_storage_integration_test)

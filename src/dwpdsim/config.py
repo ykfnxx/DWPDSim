@@ -94,6 +94,24 @@ class StoragePolicyConfig:
 
 
 @dataclass(frozen=True, slots=True)
+class HybridAttentionConfig:
+    """Opt-in synchronous backend replay; sizes and pool budgets are bytes."""
+
+    enabled: bool = False
+    full_capacity_bytes: int = 0
+    linear_capacity_bytes: int = 0
+    full_block_bytes: int = 0
+    linear_checkpoint_bytes: int = 0
+    full_policy: str = "segment_lru"
+    linear_policy: str = "checkpoint_lru"
+    alpha: float = 0.1
+    decay_seconds: float = 60.0
+    linear_read_cost: float = 1.0
+    admit_storage_hits: bool = True
+    dump_on_eviction: bool = True
+
+
+@dataclass(frozen=True, slots=True)
 class SimulationConfig:
     """Capacities, policies, and logical simulation end."""
 
@@ -105,3 +123,4 @@ class SimulationConfig:
     storage_policy: StoragePolicyConfig = field(default_factory=StoragePolicyConfig)
     simulation_end_ns: int | None = None
     progress_interval_requests: int = 0
+    hybrid_attention: HybridAttentionConfig = field(default_factory=HybridAttentionConfig)

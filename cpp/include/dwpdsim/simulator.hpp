@@ -10,6 +10,7 @@
 #include <vector>
 
 #include "dwpdsim/config.hpp"
+#include "dwpdsim/hybrid.hpp"
 #include "dwpdsim/metrics.hpp"
 #include "dwpdsim/policies/memory/memory_policy.hpp"
 #include "dwpdsim/policies/storage/storage_policy.hpp"
@@ -43,6 +44,10 @@ class Simulator {
         const std::vector<HashId>& hash_ids
     );
 
+    std::optional<HybridResult> process_hybrid_event(const HybridEvent& event);
+    const HybridRuntime& hybrid_stats() const;
+    const HybridComponent* hybrid_component(NodeId id, std::size_t kind) const;
+
     void enable_memory_diagnostics(const std::string& path);
     void enable_request_diagnostics(const std::string& path);
     void finish();
@@ -67,6 +72,14 @@ class Simulator {
         Capacity,
         Background,
     };
+
+    void hybrid_require_enabled() const;
+    void hybrid_validate_path(const std::vector<HashId>& path) const;
+    void hybrid_create_path(const std::vector<HashId>& path, TimestampNs now);
+    void hybrid_admit(NodeId id, std::size_t kind, TimestampNs now);
+    void hybrid_write(NodeId id, std::size_t kind, TimestampNs now);
+    void hybrid_io(NodeId id, std::size_t kind, const char* operation, TimestampNs now);
+    HybridComponent& hybrid_data(NodeId id, std::size_t kind);
 
     static SimulationConfig validate_config(SimulationConfig config);
 
@@ -126,6 +139,7 @@ class Simulator {
     std::uint64_t memory_capacity_blocks_;
     std::uint64_t memory_used_blocks_ = 0;
     RadixTree tree_;
+    std::unique_ptr<HybridRuntime> hybrid_;
     StorageState storage_;
     std::unique_ptr<MemoryPolicy> memory_policy_;
     std::unique_ptr<StoragePolicy> storage_policy_;

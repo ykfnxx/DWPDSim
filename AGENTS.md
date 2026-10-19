@@ -7,6 +7,14 @@ vNext policy and integration contract.
 
 ## Architecture and invariants
 
+The invariants below describe the default legacy replay. Hybrid backend replay is
+explicitly opt-in through `hybrid_attention.enabled` and currently requires
+`infinite_storage`. It uses the same RadixTree, separate component state/pools,
+explicit publish/request events and a separate `.hybrid.csv` logical trace.
+Never infer LINEAR availability from path existence or FULL residency. Keep the
+legacy APIs/stats/canonical trace unchanged when the flag is off. Supported
+hybrid behavior and limits are documented in `docs/hybrid-attention-usage.md`.
+
 - Keep the simulation hot path in `cpp/`. Python in `src/dwpdsim/` handles configuration,
   dataset adaptation, batching, and results. Large inputs use contiguous `uint64`
   buffers with `process_batch`; preserve equivalence with sequential `process` calls.

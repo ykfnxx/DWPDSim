@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
@@ -89,6 +90,12 @@ Simulator::Simulator(
       storage_policy_(std::move(storage_policy)),
       metrics_(config_),
       trace_writer_(trace_path, config_.block_size_bytes, !config_.infinite_storage) {
+    if (config_.hybrid_attention.enabled) {
+        hybrid_ = std::make_unique<HybridRuntime>();
+        hybrid_->io.exceptions(std::ios::failbit | std::ios::badbit);
+        hybrid_->io.open(trace_path.string() + ".hybrid.csv");
+        hybrid_->io << "sequence,timestamp_ns,component,hash_id,operation,payload_bytes,allocated_bytes,storage_addresses\n";
+    }
     memory_policy_->bind_tree(tree_);
     if (!config_.infinite_storage) {
         next_background_tick_ns_ = storage_policy_->background_schedule().period_ns;
@@ -111,6 +118,7 @@ void Simulator::process_request(
     const HashId* hash_ids,
     std::size_t hash_count
 ) {
+    if (hybrid_) { throw std::logic_error("use hybrid events when hybrid attention is enabled"); }
     if (finished_) {
         throw std::logic_error("cannot process requests after finish");
     }
@@ -212,6 +220,7 @@ void Simulator::process_request(
 }
 
 void Simulator::enable_request_diagnostics(const std::string& path) {
+    if (hybrid_) { throw std::logic_error("legacy diagnostics require hybrid attention disabled"); }
     if (next_access_sequence_ != 0 || finished_) {
         throw std::invalid_argument("request diagnostics must start before replay");
     }
@@ -221,6 +230,7 @@ void Simulator::enable_request_diagnostics(const std::string& path) {
 }
 
 void Simulator::enable_memory_diagnostics(const std::string& path) {
+    if (hybrid_) { throw std::logic_error("legacy diagnostics require hybrid attention disabled"); }
     if (!config_.infinite_storage || next_access_sequence_ != 0 || finished_) {
         throw std::invalid_argument("memory diagnostics require infinite_storage before replay");
     }
@@ -245,6 +255,7 @@ void Simulator::finish(TimestampNs simulation_end_ns) {
     }
     run_until(simulation_end_ns);
     trace_writer_.finish();
+    if (hybrid_) { hybrid_->io.close(); }
     if (controller_windows_.is_open()) {
         controller_windows_.flush();
         if (!controller_windows_) { throw std::runtime_error("cannot flush controller windows"); }
@@ -281,7 +292,7 @@ StoragePolicyStats Simulator::storage_policy_stats() const {
 }
 
 std::uint64_t Simulator::trace_event_count() const noexcept {
-    return trace_writer_.event_count();
+    return hybrid_ ? hybrid_->io_sequence : trace_writer_.event_count();
 }
 
 std::uint64_t Simulator::memory_capacity_blocks() const noexcept {
@@ -289,12 +300,40 @@ std::uint64_t Simulator::memory_capacity_blocks() const noexcept {
 }
 
 SimulationConfig Simulator::validate_config(SimulationConfig config) {
+    const auto& h = config.hybrid_attention;
+    if (!h.enabled) {
+        const HybridAttentionConfig d;
+        if (h.full_capacity_bytes != d.full_capacity_bytes || h.linear_capacity_bytes != d.linear_capacity_bytes ||
+            h.full_block_bytes != d.full_block_bytes || h.linear_checkpoint_bytes != d.linear_checkpoint_bytes ||
+            h.full_policy != d.full_policy || h.linear_policy != d.linear_policy || h.alpha != d.alpha ||
+            h.decay_seconds != d.decay_seconds ||
+            h.linear_read_cost != d.linear_read_cost || h.admit_storage_hits != d.admit_storage_hits ||
+            h.dump_on_eviction != d.dump_on_eviction) {
+            throw std::invalid_argument("hybrid parameters require hybrid_attention.enabled=true");
+        }
+    } else {
+        if (!config.infinite_storage) { throw std::invalid_argument("hybrid replay currently requires infinite_storage"); }
+        if (!h.full_capacity_bytes || !h.linear_capacity_bytes || !h.full_block_bytes || !h.linear_checkpoint_bytes ||
+            h.full_capacity_bytes > config.memory.capacity_bytes ||
+            h.linear_capacity_bytes > config.memory.capacity_bytes - h.full_capacity_bytes) {
+            throw std::invalid_argument("hybrid pools require positive sizes and must fit the total memory budget");
+        }
+        if (h.full_policy != "segment_lru" ||
+            (h.linear_policy != "checkpoint_lru" && h.linear_policy != "frequency" && h.linear_policy != "benefit")) {
+            throw std::invalid_argument("unsupported hybrid policy");
+        }
+        if (!std::isfinite(h.alpha) || h.alpha <= 0 || h.alpha > 1 ||
+            !std::isfinite(h.decay_seconds) || h.decay_seconds <= 0 ||
+            !std::isfinite(h.linear_read_cost) || h.linear_read_cost <= 0) {
+            throw std::invalid_argument("invalid hybrid alpha, decay or read cost");
+        }
+    }
     if (config.block_size_bytes == 0) {
         throw std::invalid_argument("block_size_bytes must be positive");
     }
     if (
         config.memory.capacity_bytes < config.block_size_bytes ||
-        config.memory.capacity_bytes % config.block_size_bytes != 0
+        (!h.enabled && config.memory.capacity_bytes % config.block_size_bytes != 0)
     ) {
         throw std::invalid_argument("memory capacity must contain whole blocks");
     }
