@@ -105,6 +105,7 @@ Drop/挽回/SSD 替换/媒体/请求等待各项成本及预测 NAND 字节。�
 `benchmark/joint_cost_experiment.py` 从空缓存运行相同数据的 baseline/cost 配对实验，
 保存配置、数据与源文件校验和及 native 副本。输出目录必须不存在。设备功能验证使用
 `benchmark/joint_cost_device_smoke.py`；物理 WAF 需要另行冻结设备几何和测量窗口。
+实际数据结果和完整复现命令见 [实验记录](age-route-cost/EXPERIMENTS.md)。
 
 没有后备副本且设置 `dump_on_eviction=False` 时，移除最后副本后返回 `lost`。当前 benefit 只使用需求频率与读取成本代理，不预测此情况下的引擎重算损失。
 

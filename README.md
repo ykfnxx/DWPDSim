@@ -18,6 +18,8 @@ LINEAR/KDA checkpoint 独立管理，支持两类对象的 LRU-K 基线。真正
 模型、约束与实验边界见 [设计说明](docs/age-route-cost/DESIGN.md)。它是独立研究实现，
 不代表完整复现 Gandalf。
 
+现有WEKA数据的配对验证、参数与复现命令见 [实验记录](docs/age-route-cost/EXPERIMENTS.md)。
+
 ## 行为语义
 
 每条请求携带全局纳秒时间、唯一 request id、用于 stream placement/session gap 的 affinity id，

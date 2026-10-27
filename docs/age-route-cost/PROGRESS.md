@@ -1,9 +1,9 @@
 # Age-conditioned joint memory policy progress
 
-**Status**: 🔄 In Progress
+**Status**: ✅ Complete
 **Started**: 2026-10-27
-**Last updated**: 2026-10-27 12:55 UTC
-**Current stage**: 5. Existing-dataset baseline comparisons and policy iteration
+**Last updated**: 2026-10-27 13:21 UTC
+**Current stage**: Complete — experimental implementation and paired validation
 
 ## TODO
 - [x] 0. Freeze the shared-DRAM baseline and implementation contract
@@ -11,8 +11,8 @@
 - [x] 2. Complete route quotations, physical cost and atomic plan execution
 - [x] 3. Cost-driven shared DRAM victim and Drop/Dump selection
 - [x] 4. Functional, native, Python and device regression verification
-- [ ] 5. Existing-dataset baseline comparisons and policy iteration
-- [ ] 6. Documentation, reproducibility and requirement-by-requirement completion audit
+- [x] 5. Existing-dataset baseline comparisons and policy iteration
+- [x] 6. Documentation, reproducibility and requirement-by-requirement completion audit
 
 ---
 
@@ -102,3 +102,17 @@ Static audit found a valid short prompt (input_tokens below tokens_per_block, em
 
 ### Remove redundant quote work before complete one-hour comparisons
 Aborted4 incomplete cost/matrix processes before changing source; each output root has aborted.json and no complete result claim. Completed baseline3600 remains valid:3127 requests,hit0.9297783635,84.5258s. Optimization shares one dropped-state evaluation per victim group, reuses persisted value when there are no capacity actions, and avoids identical route quotes for already-backed groups. No change to demand law, action score or candidate order. The short-prompt terminal guard is applied in the same rebuild. Verify complete action/stat equivalence against frozen253-request weight0 and weight1 pilot outputs before new formal runs.
+
+### Frozen v6 verification and supplemental cases
+532 full Python tests plus a new action-independent-forecast test passed; final rerun now533 passed,2 optional skips. Debug CTest7/7, Ruff and diff pass. Old/new native tiny finite-storage traces are byte-identical at weights0/1; all stats except quotes/scenario_evaluations match. On253 WEKA requests, both weight0 (candidates1/scenarios4) and weight1 (default2/8) preserve every other native stat exactly. Evaluation counts134517→44547 and510696→176664. Timing samples79.82→42.16s and244.87→89.23s are single concurrent samples, not a repeated throughput result.
+Completed504-request supplemental paired cases: adaptive1TB baseline hit0.8676744222/write535831773184B, cost-w1 hit0.5956104807/write119427563520B; RR4TB and adaptive4TB both baseline hit0.8676744222/write535831773184B, cost-w1 hit0.6564396699/write167819345920B. All use2 streams/pool; no longest-horizon labels mature in600s. Preserve the negative hit-rate results; weight1 is not a recommendation.
+All completed final-v6 runtime hashes/native archives verified against4fbc866. Baseline3600 native stats exactly match the prior frozen baseline binary. TraceGen data preparation provenance code hashes (8files) all match current files; source revision23f152f6f0f9399a85901b89a6458def0ef16729 and raw source SHA29b6a19e751ff5230771519aab755f80a0f43a4ba9cf96b72d3a6a437ec99276 confirmed from dataset provenance. Data generator base6beb523 has additional source-hash-pinned implementation; do not claim the base Git revision alone reproduces it.
+
+### Stage5 complete: one-hour paired validation
+All9 final paired results completed and passed input/config/capacity/byte/native/source audits. RR1TB one hour:3127 requests,506039360input tokens. Baseline hit0.9297783635,writes2383607234560B; weight0 hit0.9161251647,writes1806705885184B (24.2029% reduction),additional6909056compute tokens; weight1 hit0.4846937440,writes480037052416B,additional225230336compute tokens. Weight1 is a negative validation outcome and is not recommended. Both weights have exactly identical raw-demand forecast scores; all60/300/1800s heads mature (12288/11552/6304 samples per type), tail windows censored. Runtime overhead remains high (baseline69.98s,weight0 670.29s,weight1 484.97s), single-run timings under varying concurrent load.
+Stage6 entered: generated Chinese EXPERIMENTS.md with source/native/data pins, preparation recipe, paired tables, predictor maturity/Brier, timing/physical limitations and exact reproduction commands. Header counts source pin4fbc866 refers to runtime sources, while final documentation/test-only commit follows. Complete matrix/sweeps/24h new-policy runs and physical GC/WAF calibration are not claimed.
+
+### Stage6 completed: final audit
+Final current-native real MQSim paired smoke passed48 requests per policy,223/395 commands, and native SHA matches all9 completed formal/supplemental results. Smoke now archives the loaded binary and records runner/Git/native fingerprints before replay, rejecting binary changes. Whole-branch diff check against main and Ruff pass; native source is unchanged since the533-pass/2-skip Python and7/7 Debug CTest validation. Forecast action-independence public test included. Primary checkout remains clean on feat/hybrid-attention-support atad50b96; no reference checkout or dataset modifications and no push.
+Correction to the preceding log's exact weight1 byte count: result JSON reports480037044224B, not480037052416B. The report's rounded480.037GB and all source JSON/CSV are correct.
+Requirement audit: native policy and mixed FULL/LINEAR support implemented; age-conditioned causal reuse training and right-censoring verified; complete finite route plans executed without silent fallback; existing prepared data compared with baseline on identical inputs; non-overwriting reproducible driver, dataset preparation recipe and parameter pins delivered. Experimental findings are preserved: weight0 trades1.3653 percentage points of joint hit for24.2029% fewer host writes; weight1 loses substantially more reuse and is not recommended. Physical GC/WAF calibration, full24h new-policy replay, sweep completion and production TTFT benefit are explicitly not claimed.

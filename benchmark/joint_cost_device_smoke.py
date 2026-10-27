@@ -7,6 +7,8 @@ geometry. This verifies conversion/completion, not finite-capacity GC or WAF.
 import argparse
 import hashlib
 import json
+import shutil
+import subprocess
 from dataclasses import asdict, replace
 from pathlib import Path
 
@@ -19,6 +21,7 @@ from dwpdsim import (
     SimulationConfig,
     StoragePolicyConfig,
     StorageTierConfig,
+    _core,
 )
 from dwpdsim.hybrid_mqsim import (
     convert_hybrid_trace,
@@ -30,6 +33,15 @@ from dwpdsim.hybrid_mqsim import (
 
 def run(output, binary):
     output.mkdir(parents=True, exist_ok=False)
+    native = Path(_core.__file__)
+    native_sha = hashlib.sha256(native.read_bytes()).hexdigest()
+    shutil.copy2(native, output / native.name)
+    provenance = {
+        "native_path": str(native), "native_sha256": native_sha,
+        "git_head": subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip(),
+        "runner_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
+    }
+    (output / "provenance.json").write_text(json.dumps(provenance, indent=2) + "\n")
     cfg = SimulationConfig(
         memory=MemoryConfig(2 << 20), block_size_bytes=16384,
         slc=StorageTierConfig(16 << 20, 2), tlc=StorageTierConfig(32 << 20, 2),
@@ -88,8 +100,11 @@ def run(output, binary):
                           "requests": stats["requests"], "commands": manifest["commands"]}), flush=True)
         results.append(row)
     assert results[0]["stats"]["prefill"]["input_tokens"] == results[1]["stats"]["prefill"]["input_tokens"]
+    if hashlib.sha256(native.read_bytes()).hexdigest() != native_sha:
+        raise RuntimeError("native binary changed during MQSim smoke replay")
     summary = {"status": "passed", "scope": "paired functional I/O conversion/completion; no GC/WAF efficacy claim",
-               "input_sha256": input_sha, "policies": [r["policy"] for r in results]}
+               "input_sha256": input_sha, "policies": [r["policy"] for r in results],
+               "native_sha256": native_sha, "native_unchanged_during_run": True}
     (output / "summary.json").write_text(json.dumps(summary, indent=2) + "\n")
 
 

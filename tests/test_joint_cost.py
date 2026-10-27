@@ -241,3 +241,11 @@ def test_short_prompt_without_complete_hash_blocks_matches_baseline(tmp_path):
             observations.append(sim.hybrid_stats())
     assert observations[0]["prefill"] == observations[1]["prefill"]
     assert observations[0]["cost"]["logical_full_demands"] == 2
+
+
+def test_reuse_training_is_independent_of_drop_dump_actions(tmp_path):
+    saved = run(configuration(wear_weight=0), tmp_path / "save", count=54)
+    dropped = run(configuration(wear_weight=1e16), tmp_path / "drop", count=54)
+    assert saved["full"]["drop_objects"] != dropped["full"]["drop_objects"]
+    for field in ("logical_full_demands", "logical_linear_demands", "reuse"):
+        assert saved["cost"][field] == dropped["cost"][field]
