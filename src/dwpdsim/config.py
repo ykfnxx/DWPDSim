@@ -112,6 +112,7 @@ class JointCostConfig:
     seed: int = 42
     nand_page_bytes: int = 16384
     nand_pages_per_block: int = 256
+    mapping_pages_per_block: float = 1
     overprovisioning: float = 0.125
 
 

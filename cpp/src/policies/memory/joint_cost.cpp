@@ -26,6 +26,13 @@ std::array<std::uint64_t, 3> horizons(const JointCostConfig& c) {
 StorageTier other(StorageTier t) { return t == StorageTier::Slc ? StorageTier::Tlc : StorageTier::Slc; }
 std::uint64_t units(std::uint64_t bytes, std::uint64_t unit) { return bytes / unit + (bytes % unit != 0); }
 
+double reserve_io(std::array<double, 2>& busy, std::size_t pool, double arrival, double service) {
+    const auto finish = std::max(busy[pool], arrival) + service;
+    if (!std::isfinite(finish)) { throw std::overflow_error("joint cost I/O service time overflow"); }
+    busy[pool] = finish;
+    return finish;
+}
+
 } // namespace
 
 JointMemoryCostPolicy::JointMemoryCostPolicy(const SimulationConfig& config, const RadixTree& tree)
@@ -39,6 +46,7 @@ JointMemoryCostPolicy::JointMemoryCostPolicy(const SimulationConfig& config, con
     if (!c.candidates_per_kind || !c.scenario_limit || !c.sample_every || !c.samples ||
         c.reclaim_bytes > config.memory.capacity_bytes ||
         !c.nand_page_bytes || !c.nand_pages_per_block ||
+        !std::isfinite(c.mapping_pages_per_block) || c.mapping_pages_per_block < 0 ||
         config.block_size_bytes % c.nand_page_bytes ||
         !std::isfinite(c.overprovisioning) || c.overprovisioning <= 0 || c.overprovisioning >= 1 ||
         !std::isfinite(c.wear_weight) || c.wear_weight < 0) {
@@ -54,6 +62,12 @@ JointMemoryCostPolicy::JointMemoryCostPolicy(const SimulationConfig& config, con
 
 const AgeReuseHistory& JointMemoryCostPolicy::history(NodeId id, std::size_t kind) const {
     return records_.at(id).history[kind];
+}
+
+std::optional<HybridCostCopyTimes> JointMemoryCostPolicy::copy_times(NodeId id, std::size_t kind) const {
+    const auto& copy = records_.at(id).copies[kind];
+    if (!copy) { return std::nullopt; }
+    return HybridCostCopyTimes{copy->written, copy->touched, copy->ready_seconds};
 }
 
 AgeReuseFeature JointMemoryCostPolicy::feature(NodeId id, std::size_t kind, TimestampNs now) const {
@@ -168,11 +182,21 @@ void JointMemoryCostPolicy::append(Frontier& f, HybridCostObject object,
 }
 
 void JointMemoryCostPolicy::io(NodeId id, std::size_t kind, Operation op,
-    StorageLocation location, std::uint64_t bytes, TimestampNs now, TraceReason reason) {
+    StorageLocation location, std::uint64_t bytes, TimestampNs now, TraceReason reason,
+    std::uint64_t sequence, std::optional<std::uint64_t> dependency) {
+    if (!io_time_ || *io_time_ != now) { io_completions_.clear(); io_time_ = now; }
+    const auto arrival = dependency ? std::max(now / 1e9, io_completions_.at(*dependency)) : now / 1e9;
+    const auto pool = storage_tier_index(location.tier);
+    const auto& config = config_.hybrid_attention.cost;
+    const auto service = op == Operation::Trim ? 0 : bytes /
+        (op == Operation::Read ? config.storage_read_bytes_per_second[pool] :
+            config.storage_write_bytes_per_second[pool]);
+    io_completions_[sequence] = reserve_io(busy_until_, pool, arrival, service);
     auto& copy = records_.at(id).copies[kind];
     if (op == Operation::Write) {
         const auto life = lifetime(id, kind, location.tier, now);
-        copy = Copy{location.tier, location.stream_id, now, now, life};
+        const auto touched = reason == TraceReason::MemoryDump ? now : copy.value().touched;
+        copy = Copy{location.tier, location.stream_id, now, touched, life, io_completions_.at(sequence)};
         pending_write_bytes_[storage_tier_index(location.tier)] += bytes;
         append(frontiers_[{location.tier, location.stream_id}], {id, kind},
             static_cast<double>(bytes) / config_.hybrid_attention.cost.nand_page_bytes, life, now);
@@ -311,7 +335,7 @@ std::vector<JointMemoryCostPolicy::Scenario> JointMemoryCostPolicy::scenarios(
         prior.push_back(records_.at(endpoint).terminal_count + 0.25);
         prior_total += prior.back();
     }
-    double survival = 1, left = 0;
+    std::vector<std::array<double, 3>> hazards(result.size());
     for (std::size_t h = 0; h < 3; ++h) {
         std::vector<double> target(objects.size()), fitted(objects.size()), intensity(result.size());
         double target_mean = 0;
@@ -336,68 +360,127 @@ std::vector<JointMemoryCostPolicy::Scenario> JointMemoryCostPolicy::scenarios(
                 intensity[j] = next;
             }
         }
-        double sum = 0;
-        for (const auto rate : intensity) { sum += rate; }
         for (std::size_t i = 0; i < objects.size(); ++i) {
             const auto error = fitted[i] - target[i];
             counters_.hazard_residual += error * error;
         }
-        const double right = config_.hybrid_attention.cost.horizons_seconds[h];
-        if (sum > 0) {
-            const auto within = sum > 1e-4 ? 1 / sum - 1 / std::expm1(sum) :
-                0.5 - sum / 12 + sum * sum * sum / 720;
-            for (std::size_t j = 0; j < result.size(); ++j) {
-                result[j].mass[h] = survival * -std::expm1(-sum) * intensity[j] / sum;
-                result[j].time_seconds[h] = left + (right - left) * within;
+        for (std::size_t j = 0; j < result.size(); ++j) { hazards[j][h] = intensity[j]; }
+    }
+    const auto& cost = config_.hybrid_attention.cost;
+    const auto first_arrival = [&](std::size_t j, double u) {
+        auto remaining = -std::log1p(-u);
+        double left = 0;
+        for (std::size_t h = 0; h < 3; ++h) {
+            const auto right = cost.horizons_seconds[h];
+            if (remaining < hazards[j][h]) {
+                return left + (right - left) * remaining / hazards[j][h];
             }
+            remaining -= hazards[j][h];
+            left = right;
         }
-        survival *= std::exp(-sum);
-        left = right;
+        return std::numeric_limits<double>::infinity();
+    };
+    // Each prototype has its own first arrival. Conditioning on this arrival
+    // preserves its probability even for rare paths. Earlier prototype arrivals
+    // repair shared copies under a fixed no-further-eviction continuation.
+    for (std::size_t j = 0; j < result.size(); ++j) {
+        double survival = 1, left = 0;
+        for (std::size_t h = 0; h < 3; ++h) {
+            const auto right = cost.horizons_seconds[h];
+            const auto mass = survival * -std::expm1(-hazards[j][h]);
+            if (mass > 0) {
+                for (unsigned sample = 0; sample < 3; ++sample) {
+                    const auto u = (sample + 0.5) / 3;
+                    const auto time = left - (right - left) * std::log1p(
+                        -u * -std::expm1(-hazards[j][h])) / hazards[j][h];
+                    Scenario::Event event{mass / 3, time, 0, {}, sample};
+                    for (std::size_t k = 0; k < result.size(); ++k) {
+                        if (k == j) { continue; }
+                        const auto endpoint = result[k].request.hash_ids.back();
+                        const auto shift = static_cast<double>(
+                            ((endpoint ^ cost.seed) * 11400714819323198485ULL) >> 11) /
+                            9007199254740992.0;
+                        if (first_arrival(k, std::fmod(u + shift, 1.0)) >= time) { continue; }
+                        const auto& prior_path = result[k].request.hash_ids;
+                        const auto& path = result[j].request.hash_ids;
+                        std::size_t shared = 0;
+                        while (shared < std::min(prior_path.size(), path.size()) &&
+                            prior_path[shared] == path[shared]) { ++shared; }
+                        event.repaired_full = std::max(event.repaired_full, shared);
+                        if (config_.hybrid_attention.checkpoint_generation == "request_end") {
+                            if (shared == prior_path.size()) { event.repaired_linear.push_back(endpoint); }
+                        } else {
+                            for (std::size_t i = 0; i < shared; ++i) {
+                                if ((i + 1) * config_.hybrid_attention.tokens_per_block %
+                                    config_.hybrid_attention.checkpoint_interval_tokens == 0) {
+                                    event.repaired_linear.push_back(path[i]);
+                                }
+                            }
+                        }
+                    }
+                    counters_.expected_first_requests += event.mass;
+                    result[j].events.push_back(std::move(event));
+                }
+            }
+            survival *= std::exp(-hazards[j][h]);
+            left = right;
+        }
     }
     return result;
 }
 
-double JointMemoryCostPolicy::value(const std::vector<Scenario>& scenes,
+JointMemoryCostPolicy::Value JointMemoryCostPolicy::value(const std::vector<Scenario>& scenes,
     const HybridRecoveryState& base, const std::vector<HybridCopyChange>& changes,
     const StoragePolicy& policy,
-    const StorageView& storage, TimestampNs now) {
-    double result = 0;
+    const StorageView& storage, TimestampNs now, const std::array<double, 2>& queue_until) {
+    Value result;
     const HybridRecoveryState projected(base, changes);
     const auto stats = policy.stats(storage);
     const auto background = policy.background_schedule().period_ns / 1e9;
+    const auto& hybrid = config_.hybrid_attention;
     for (const auto& scene : scenes) {
-        for (std::size_t h = 0; h < 3; ++h) {
-            if (scene.mass[h] == 0) { continue; }
-            const auto time = scene.time_seconds[h];
-            for (unsigned sample = 0; sample < 3; ++sample) {
-                std::vector<HybridCopyChange> at_time;
-                for (const auto id : scene.request.hash_ids) {
-                    for (std::size_t kind = 0; kind < 2; ++kind) {
-                        const auto copy = projected.component(id, kind);
-                        if (!copy.storage || copy.in_dram) { continue; }
-                        const auto& actual = tree_.node(id).hybrid->components[kind];
-                        const bool added = !actual.on_storage() || tree_.node(id).storage_tier != *copy.storage;
-                        const auto touched = added ? now : records_.at(id).copies[kind].value().touched;
-                        auto chance = std::exp(-time / lifetime(id, kind, *copy.storage, now));
-                        if (background > 0 && stats.idle_threshold_seconds > 0) {
-                            const auto eligibility = touched / 1e9 + stats.idle_threshold_seconds;
-                            const auto tick = std::ceil(eligibility / background) * background;
-                            if (now / 1e9 + time >= tick) { chance = 0; }
-                        }
-                        if (added && time < units(copy.size_bytes, config_.block_size_bytes) *
-                            config_.block_size_bytes / config_.hybrid_attention.cost.storage_write_bytes_per_second[
-                                storage_tier_index(*copy.storage)]) { chance = 0; }
-                        // Common stratified survival draws across every action.
-                        const auto shift = static_cast<double>((id * 11400714819323198485ULL) >> 11) /
-                            9007199254740992.0;
-                        const auto u = std::fmod((sample + 0.5) / 3 + shift, 1.0);
-                        if (u >= chance) { at_time.push_back({id, kind, false, false, {}, false, true}); }
-                    }
-                }
-                result += scene.mass[h] * recovery_.evaluate(scene.request,
-                    HybridRecoveryState(projected, at_time)).total_seconds / 3;
-                ++counters_.scenario_evaluations;
+        for (const auto& event : scene.events) {
+            const auto time = event.time_seconds;
+            std::vector<HybridCopyChange> repairs;
+            for (std::size_t i = 0; i < event.repaired_full; ++i) {
+                repairs.push_back({scene.request.hash_ids[i], 0, false, false, {}, true,
+                    false, true, hybrid.full_block_bytes});
             }
+            for (const auto id : event.repaired_linear) {
+                repairs.push_back({id, 1, false, false, {}, true, false, true, hybrid.linear_checkpoint_bytes});
+            }
+            const HybridRecoveryState repaired(projected, repairs);
+            std::vector<HybridCopyChange> at_time;
+            for (const auto id : scene.request.hash_ids) {
+                for (std::size_t kind = 0; kind < 2; ++kind) {
+                    const auto copy = repaired.component(id, kind);
+                    if (!copy.storage || copy.in_dram) { continue; }
+                    const auto& actual = tree_.node(id).hybrid->components[kind];
+                    const bool added = !actual.on_storage() || tree_.node(id).storage_tier != *copy.storage;
+                    const auto touched = added ? now : records_.at(id).copies[kind].value().touched;
+                    auto chance = std::exp(-time / lifetime(id, kind, *copy.storage, now));
+                    if (background > 0 && stats.idle_threshold_seconds > 0) {
+                        const auto eligibility = touched / 1e9 + stats.idle_threshold_seconds;
+                        const auto tick = std::ceil(eligibility / background) * background;
+                        if (now / 1e9 + time >= tick) { chance = 0; }
+                    }
+                    const auto shift = static_cast<double>((id * 11400714819323198485ULL) >> 11) /
+                        9007199254740992.0;
+                    const auto u = std::fmod((event.sample + 0.5) / 3 + shift, 1.0);
+                    if (u >= chance) { at_time.push_back({id, kind, false, false, {}, false, true}); }
+                }
+            }
+            const auto restored = recovery_.evaluate(scene.request, HybridRecoveryState(repaired, at_time));
+            double read = 0, queued_read = 0;
+            for (std::size_t k = 0; k < 2; ++k) {
+                if (!restored.storage_read_bytes[k]) { continue; }
+                const auto service = restored.storage_read_bytes[k] / hybrid.cost.storage_read_bytes_per_second[k];
+                read = std::max(read, service);
+                queued_read = std::max(queued_read, service + std::max(0.0, queue_until[k] - now / 1e9 - time));
+            }
+            result.service += event.mass * restored.total_seconds;
+            result.wait += event.mass * (queued_read - read);
+            ++counters_.scenario_evaluations;
         }
     }
     return result;
@@ -406,6 +489,13 @@ double JointMemoryCostPolicy::value(const std::vector<Scenario>& scenes,
 void JointMemoryCostPolicy::media_quote(HybridCostQuote& quote, TimestampNs now,
     const StorageView& storage) {
     const auto& c = config_.hybrid_attention.cost;
+    const auto start = now / 1e9;
+    auto queued = busy_until_;
+    std::array<double, 2> ready{start, start};
+    const auto schedule = [&](StorageTier tier, double service, double arrival) {
+        const auto k = storage_tier_index(tier);
+        return reserve_io(queued, k, arrival, service);
+    };
     auto frontiers = frontiers_; // Bounded partial-block summaries, never a tree/FTL snapshot.
     std::set<std::tuple<NodeId, std::size_t, StorageTier>> invalidated;
     std::map<std::pair<NodeId, std::size_t>, Copy> virtual_copies;
@@ -436,7 +526,8 @@ void JointMemoryCostPolicy::media_quote(HybridCostQuote& quote, TimestampNs now,
         quote.nand_bytes[storage_tier_index(copy.tier)] +=
             f.pages * (gc_ratio(f, copy.tier) - before) * c.nand_page_bytes;
     };
-    const auto program = [&](HybridCostObject object, Placement placement) {
+    const auto program = [&](HybridCostObject object, Placement placement,
+            double arrival) {
         const auto bytes = units(tree_.node(object.id).hybrid->components[object.kind].size_bytes,
             config_.block_size_bytes) * config_.block_size_bytes;
         const auto pages = static_cast<double>(bytes) / c.nand_page_bytes;
@@ -454,12 +545,14 @@ void JointMemoryCostPolicy::media_quote(HybridCostQuote& quote, TimestampNs now,
             first * alive) / (f.pages + first);
         const auto mixed = mixed_live / (1 - mixed_live + c.overprovisioning);
         const auto gc = pages * own + f.pages * (mixed - before) + first * (mixed - own);
-        // One amortized mapping page per data block is an explicit model term.
-        quote.nand_bytes[k] += bytes + gc * c.nand_page_bytes + bytes / c.nand_pages_per_block;
-        quote.queue += bytes / c.storage_write_bytes_per_second[k];
+        quote.nand_bytes[k] += bytes + gc * c.nand_page_bytes +
+            bytes * c.mapping_pages_per_block / c.nand_pages_per_block;
+        const auto completed = schedule(placement.tier, bytes / c.storage_write_bytes_per_second[k],
+            std::max(arrival, ready[k]));
         append(f, object, pages, life, now);
         virtual_copies.insert_or_assign({object.id, object.kind},
             Copy{placement.tier, placement.stream_id, now, now, life});
+        return completed;
     };
     for (const auto& action : quote.capacity_actions) {
         std::visit([&](const auto& intent) {
@@ -470,21 +563,26 @@ void JointMemoryCostPolicy::media_quote(HybridCostQuote& quote, TimestampNs now,
                         if (tree_.node(id).hybrid->components[k].on_storage()) { invalidate(id, k); }
                     }
                 }
+                const auto pool = storage_tier_index(intent.tier);
+                ready[pool] = std::max(ready[pool], queued[pool]);
             } else {
                 for (const auto id : storage.resident_nodes(intent.source_segment_endpoint, other(intent.destination.tier))) {
                     for (std::size_t k = 0; k < 2; ++k) {
                         const auto& component = tree_.node(id).hybrid->components[k];
                         if (!component.on_storage()) { continue; }
-                        quote.queue += component.storage_units * config_.block_size_bytes /
-                            c.storage_read_bytes_per_second[storage_tier_index(other(intent.destination.tier))];
+                        const auto source = other(intent.destination.tier);
+                        const auto read = schedule(source, component.storage_units * config_.block_size_bytes /
+                            c.storage_read_bytes_per_second[storage_tier_index(source)], start);
                         invalidate(id, k);
-                        program({id, k}, intent.destination);
+                        const auto written = program({id, k}, intent.destination, read);
+                        ready[storage_tier_index(source)] = std::max(ready[storage_tier_index(source)], written);
                     }
                 }
             }
         }, action);
     }
-    for (const auto& write : quote.writes) { program(write.object, write.placement); }
+    for (const auto& write : quote.writes) { program(write.object, write.placement, start); }
+    quote.queue_until = queued;
     for (std::size_t k = 0; k < 2; ++k) { quote.media += quote.nand_bytes[k] / 1073741824 * c.nand_seconds_per_gib[k]; }
 }
 
@@ -527,22 +625,42 @@ HybridCostQuote JointMemoryCostPolicy::select(
         }
     }
     const HybridRecoveryState admitted(tree_, admission);
-    const auto base = value(scenes, admitted, {}, policy, storage, now);
+    const auto base = value(scenes, admitted, {}, policy, storage, now, busy_until_);
     std::optional<std::size_t> best;
+    double best_loss = 0;
     for (std::size_t i = 0; i < quotes.size(); ++i) {
         auto& q = quotes[i];
+        media_quote(q, now, storage);
         const auto evaluate = [&](bool writes, bool capacity) {
-            return value(scenes, admitted, changes(q, writes, capacity), policy, storage, now);
+            return value(scenes, admitted, changes(q, writes, capacity), policy, storage, now,
+                writes ? q.queue_until : busy_until_);
         };
         const auto dropped = evaluate(false, false), persisted = evaluate(true, false);
-        q.drop = dropped - base;
-        q.benefit = dropped - persisted;
-        q.replacement = evaluate(true, true) - persisted;
-        media_quote(q, now, storage);
+        const auto final = evaluate(true, true);
+        q.drop = dropped.service - base.service;
+        q.benefit = dropped.service - persisted.service;
+        q.replacement = final.service - persisted.service;
+        q.queue = final.wait - base.wait;
         q.total = q.drop - q.benefit + q.replacement +
             config_.hybrid_attention.cost.wear_weight * q.media + q.queue;
         if (!std::isfinite(q.total)) { throw std::overflow_error("joint cost quotation produced a nonfinite cost"); }
-        if (!best || q.total / q.released_bytes < quotes[*best].total / quotes[*best].released_bytes) { best = i; }
+        const auto delta = changes(q, true, true);
+        const HybridRecoveryState final_state(admitted, delta);
+        double lost = 0;
+        for (const auto& change : delta) {
+            const auto before = admitted.component(change.id, change.kind);
+            if (before.available() && !final_state.component(change.id, change.kind).available()) {
+                lost += before.size_bytes;
+            }
+        }
+        lost /= q.released_bytes;
+        const auto score = q.total / q.released_bytes;
+        // Equal modeled costs retain last copies; a truncated prototype set
+        // does not prove their future value is zero. No epsilon changes costs.
+        if (!best || score < quotes[*best].total / quotes[*best].released_bytes ||
+            (score == quotes[*best].total / quotes[*best].released_bytes && lost < best_loss)) {
+            best = i; best_loss = lost;
+        }
     }
     if (!best) { throw std::logic_error("joint cost policy has no DRAM eviction candidate"); }
     ++counters_.decisions;

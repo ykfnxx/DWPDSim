@@ -385,6 +385,7 @@ PYBIND11_MODULE(_core, module) {
         .def_readwrite("seed", &JointCostConfig::seed)
         .def_readwrite("nand_page_bytes", &JointCostConfig::nand_page_bytes)
         .def_readwrite("nand_pages_per_block", &JointCostConfig::nand_pages_per_block)
+        .def_readwrite("mapping_pages_per_block", &JointCostConfig::mapping_pages_per_block)
         .def_readwrite("overprovisioning", &JointCostConfig::overprovisioning);
 
     py::class_<HybridAttentionConfig>(module, "HybridAttentionConfig")
@@ -948,6 +949,11 @@ PYBIND11_MODULE(_core, module) {
                 const auto& h = cost.history(id, component);
                 result["logical_demands"] = h.count;
                 result["logical_last_ns"] = h.last_ns;
+                if (const auto copy = cost.copy_times(id, component)) {
+                    result["cost_model_copy_written_ns"] = copy->written;
+                    result["cost_model_storage_last_ns"] = copy->accessed;
+                    result["cost_model_copy_ready_seconds"] = copy->ready_seconds;
+                }
             }
             result["storage_addresses"] = c ? c->storage_addresses : std::vector<std::uint64_t>{};
             if (c && c->on_storage() && !simulator.config().infinite_storage) {
@@ -1030,6 +1036,7 @@ PYBIND11_MODULE(_core, module) {
                 row["predicted_nand_bytes"] = c.predicted_nand_bytes;
                 row["selected_route_writes"] = c.selected_routes;
                 row["hazard_fit_squared_error"] = c.hazard_residual;
+                row["expected_first_requests"] = c.expected_first_requests;
                 row["history_entries"] = policy.history_entries();
                 row["shared_model_bytes"] = policy.reuse().shared_bytes();
                 row["pending_forecasts"] = policy.reuse().pending_forecasts();

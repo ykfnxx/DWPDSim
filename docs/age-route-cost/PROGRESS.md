@@ -2,15 +2,15 @@
 
 **Status**: 🔄 In Progress
 **Started**: 2026-10-27
-**Last updated**: 2026-10-27 12:16 UTC
-**Current stage**: 2. Complete route quotations, physical cost and atomic plan execution
+**Last updated**: 2026-10-27 12:48 UTC
+**Current stage**: 5. Existing-dataset baseline comparisons and policy iteration
 
 ## TODO
 - [x] 0. Freeze the shared-DRAM baseline and implementation contract
 - [x] 1. Online age-conditioned demand estimator and joint recovery value
-- [ ] 2. Complete route quotations, physical cost and atomic plan execution
-- [ ] 3. Cost-driven shared DRAM victim and Drop/Dump selection
-- [ ] 4. Functional, native, Python and device regression verification
+- [x] 2. Complete route quotations, physical cost and atomic plan execution
+- [x] 3. Cost-driven shared DRAM victim and Drop/Dump selection
+- [x] 4. Functional, native, Python and device regression verification
 - [ ] 5. Existing-dataset baseline comparisons and policy iteration
 - [ ] 6. Documentation, reproducibility and requirement-by-requirement completion audit
 
@@ -85,3 +85,14 @@ Correction at final checkpoint: V2 session63715 is now TERMINAL (exit0), not act
 ### [12:16] 2. Quotation representation and queue accounting iteration
 Previous goal turn was progress: committed executable policy, independent baseline equality and failed real-data iterations with explicit evidence. All prior jobs are terminal. First optimize state deltas without changing numerical decisions, then correct queue semantics separately.
 Layered quotation representation verified on all1584 requests: every native statistic exactly equals V2 (including all decisions, costs, I/O and demand scores). Current run340.250s vs V2412.601s, one run each, no repeated throughput claim. Native/source unchanged flags true; evidence build/age-route-cost/layered-equivalence.json. Public queue test now independently reproduces the semantic bug: an idle device's first Dump is charged0.24s queue cost instead of0. Tests are intentionally red until the next semantic fix.
+
+### Queue-v3 paired pilot and remaining modeling errors
+253 requests in [0,300): baseline joint-token hit 0.8145001876; weight0 0.6134668217; weight1 0.5898336810. Full regression: 529 Python passed,2 skipped; Debug CTest7/7 passed. Queue-v3 is insufficient. Audit found own asynchronous Dump wait still charged separately from demand readiness; projected copies were considered unavailable before modeled write completion, so two incompatible treatments penalized the same operation. The next revision charges only request-visible queue interference. Also replace globally-first affected-path mass with each prototype's own first demand, using common conditioned arrival quadrature and a fixed repair continuation so shared lost prefixes are charged only until an earlier demand repairs them. This is a finite-horizon model, not an inferred exact joint distribution.
+
+### Route quotation and request-visible cost revision
+Stage2 quotation/execution complete: full finite-capacity READ→WRITE→TRIM plans, model storage recency preservation, per-pool queue dependencies, physical geometry/mapping parameters and real MQSim functional conversion/completion verified. Model calibration remains an explicitly separate experiment limitation.
+Stage3 revised each-prototype first-demand quadrature and fixed prior-request repair continuation. 530 Python tests plus7 Debug CTest and paired MQSim functional runs passed before the exact-cost retention tiebreak; the additional public branch-mass test passes. V4 300s results: weight0 hit0.65549, weight1 hit0.61791. Public per-request audit identifies zero-valued FULL Drop cascades beginning at request60. With zero wear price, exact score ties were selecting Drop by enumeration order. Ties now preserve fewer last-copy bytes, without changing scores or using an epsilon. Testing this change and the default larger prototype search next.
+
+### Stage3 selection and stage4 functional verification completed
+Exact-score tiebreak pilot: weight0 hit0.8115803683 versus baseline0.8145001876 on253 identical requests; allocated writes297,635,151,872B versus348,215,312,384B. Final current native:531 pytest passed,2 optional skips; Debug CTest7/7; Ruff and git diff check pass. Paired real MQSim smoke-v5 completed48 requests per policy, baseline223 and cost395 commands; byte/count/dependency reconciliation passed. Public tests cover shared-byte capacity and legal restoration, raw logical histories after loss, route prices, finite ledgers, pending publication, request-visible queues, migration recency and independent first-demand mass.
+Stage5: frozen-source one-hour empty-cache RR1TB baseline,weight0,weight1 comparisons running with candidates1/scenarios4. The default2/8 prototype pilot is separately labeled because its search configuration and overhead differ. Cost geometry now explicitly4224 pages/block,mapping0,matching reference Ideal_Mapping_Table mode. Added DESIGN.md and a non-overwriting paired experiment driver; neither generated datasets nor binaries are committed.

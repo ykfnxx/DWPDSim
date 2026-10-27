@@ -50,6 +50,8 @@ def configuration(manifest, args):
         hybrid = replace(hybrid, eviction_mode="joint_cost", cost=JointCostConfig(
             wear_weight=args.cost_weight, candidates_per_kind=args.cost_candidates,
             scenario_limit=args.cost_scenarios, reclaim_bytes=args.cost_reclaim_bytes,
+            nand_pages_per_block=args.cost_pages_per_block,
+            mapping_pages_per_block=args.cost_mapping_pages_per_block,
         ))
     return SimulationConfig(
         memory=MemoryConfig(args.memory_bytes), block_size_bytes=unit,
@@ -244,6 +246,9 @@ def main():
     parser.add_argument("--cost-candidates", type=int, default=2)
     parser.add_argument("--cost-scenarios", type=int, default=8)
     parser.add_argument("--cost-reclaim-bytes", type=int, default=0)
+    parser.add_argument("--cost-pages-per-block", type=int, default=4224)
+    parser.add_argument("--cost-mapping-pages-per-block", type=float, default=0,
+                        help="0 matches reference MQSim Ideal_Mapping_Table=true")
     parser.add_argument("--batch-size", type=int, default=32)
     parser.add_argument("--end-seconds", type=float, default=86400)
     parser.add_argument("--requests", type=int, default=0, help="0 replays every request")

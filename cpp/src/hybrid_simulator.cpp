@@ -74,7 +74,7 @@ std::uint64_t Simulator::hybrid_io(NodeId id, std::size_t kind, const char* oper
         if (hybrid_->cost) {
             hybrid_->cost->io(id, kind, std::string_view(operation) == "READ" ? Operation::Read :
                 std::string_view(operation) == "WRITE" ? Operation::Write : Operation::Trim,
-                source, bytes, now, reason);
+                source, bytes, now, reason, sequence, dependency);
         }
     }
     if (!config_.hybrid_attention.emit_io_trace) { return sequence; }
@@ -379,6 +379,9 @@ std::string Simulator::hybrid_demand(NodeId id, std::size_t kind, TimestampNs no
 std::optional<HybridResult> Simulator::process_hybrid_event(const HybridEvent& e) {
     hybrid_require_enabled();
     hybrid_validate_order(e.timestamp_ns, e.sequence);
+    if (hybrid_->cost && e.action != "observe") {
+        throw std::invalid_argument("joint_cost publication and demand require process_hybrid_prefill");
+    }
     if (e.action != "observe" && e.action != "publish" && e.action != "request") {
         throw std::invalid_argument("hybrid action must be observe, publish or request; pending/partial events unsupported");
     }
