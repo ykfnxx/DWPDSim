@@ -108,6 +108,25 @@ void HybridMemoryIndex::remove(std::size_t kind, NodeId id) {
     }
 }
 
+std::vector<std::vector<HybridCostObject>> HybridMemoryIndex::cost_candidates(
+    const RadixTree& tree, std::uint64_t required, std::size_t groups) const {
+    std::vector<std::vector<HybridCostObject>> result;
+    for (std::size_t kind = 0; kind < 2; ++kind) {
+        auto at = lru_k_order_[kind].begin();
+        for (std::size_t group = 0; group < groups && at != lru_k_order_[kind].end(); ++group) {
+            std::vector<HybridCostObject> objects;
+            std::uint64_t bytes = 0;
+            do {
+                const auto id = std::get<4>(*at++);
+                objects.push_back({id, kind});
+                bytes += tree.node(id).hybrid->components[kind].size_bytes;
+            } while (bytes < required && at != lru_k_order_[kind].end());
+            result.push_back(std::move(objects));
+        }
+    }
+    return result;
+}
+
 std::vector<NodeId> HybridMemoryIndex::victim(std::size_t kind, const RadixTree& tree,
     const HybridAttentionConfig& config, TimestampNs now, std::uint64_t& examined,
     std::optional<NodeId> incoming, bool drop_next, std::uint64_t linear_budget) const {

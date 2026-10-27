@@ -71,6 +71,11 @@ std::uint64_t Simulator::hybrid_io(NodeId id, std::size_t kind, const char* oper
         if (std::string_view(operation) == "READ") { ++counts.reads; counts.read_bytes += bytes; }
         else if (std::string_view(operation) == "WRITE") { ++counts.writes; counts.write_bytes += bytes; }
         else { ++counts.trims; counts.trim_bytes += bytes; }
+        if (hybrid_->cost) {
+            hybrid_->cost->io(id, kind, std::string_view(operation) == "READ" ? Operation::Read :
+                std::string_view(operation) == "WRITE" ? Operation::Write : Operation::Trim,
+                source, bytes, now, reason);
+        }
     }
     if (!config_.hybrid_attention.emit_io_trace) { return sequence; }
     auto& out = hybrid_->io;
@@ -99,7 +104,8 @@ std::uint64_t Simulator::hybrid_io(NodeId id, std::size_t kind, const char* oper
     return sequence;
 }
 
-void Simulator::hybrid_write(NodeId id, std::size_t kind, TimestampNs now) {
+void Simulator::hybrid_write(NodeId id, std::size_t kind, TimestampNs now,
+    std::optional<Placement> quoted_placement) {
     auto& c = hybrid_data(id, kind);
     if (c.on_storage()) { return; }
     const auto units = c.size_bytes / config_.block_size_bytes +
@@ -111,14 +117,20 @@ void Simulator::hybrid_write(NodeId id, std::size_t kind, TimestampNs now) {
         const NodeId incoming[] = {id};
         const RequestContext request{now, hybrid_->current_request_id,
             hybrid_->current_affinity_id, {}, {}};
-        const auto decision = storage_policy_->place_dump(DumpContext{
+        const auto decision = quoted_placement ? DumpPlacementDecision{*quoted_placement} :
+            storage_policy_->place_dump(DumpContext{
             request, segment, NodeSpan{incoming, 1}, units,
             units * config_.block_size_bytes, NodeSpan{incoming, 1}}, storage_view());
         // Existing policies manage one SSD bundle per prefix node. Components
         // retain separate copies but share that bundle's tier and stream.
         placement = node.on_storage ? node.storage_location() :
             StorageLocation{decision.placement.tier, 0, decision.placement.stream_id};
-        if (!hybrid_ensure_capacity(placement.tier, units, {id}, now)) {
+        if (quoted_placement) {
+            if (storage_.tier(placement.tier).used_blocks() + units >
+                storage_policy_->capacity_limit_blocks(placement.tier, storage_view())) {
+                throw std::logic_error("joint cost quote did not reserve enough storage capacity");
+            }
+        } else if (!hybrid_ensure_capacity(placement.tier, units, {id}, now)) {
             ++hybrid_->counters[kind].admission_rejections;
             return;
         }
@@ -144,6 +156,48 @@ void Simulator::hybrid_write(NodeId id, std::size_t kind, TimestampNs now) {
             now, hybrid_->current_affinity_id, tree_.segment_leaf_for(id),
             NodeSpan{incoming, 1}, Placement{placement.tier, placement.stream_id},
             placement.tier, units * config_.block_size_bytes});
+    }
+}
+
+void Simulator::hybrid_cost_evict(NodeId incoming, std::size_t kind,
+    std::uint64_t required_bytes, TimestampNs now) {
+    const auto& cost_config = config_.hybrid_attention.cost;
+    const auto quantum = cost_config.reclaim_bytes ? cost_config.reclaim_bytes :
+        config_.hybrid_attention.linear_checkpoint_bytes;
+    const auto candidates = hybrid_->index.cost_candidates(tree_, std::max(required_bytes, quantum),
+        cost_config.candidates_per_kind);
+    const auto quote = hybrid_->cost->select(candidates, {incoming, kind},
+        *storage_policy_, storage_view(), now);
+    for (const auto& action : quote.capacity_actions) {
+        if (!execute_action(action, ActionPlane::Capacity, quote.protected_nodes,
+                TraceContext{now, hybrid_->current_request_id, {}})) {
+            throw std::logic_error("selected joint cost capacity action failed");
+        }
+    }
+    for (const auto& write : quote.writes) { hybrid_write(write.object.id, write.object.kind, now, write.placement); }
+    for (const auto& v : quote.victims) {
+        auto& component = hybrid_data(v.id, v.kind);
+        auto& stats = hybrid_->counters[v.kind];
+        const auto wrote = std::any_of(quote.writes.begin(), quote.writes.end(), [&](const auto& w) {
+            return w.object.id == v.id && w.object.kind == v.kind;
+        });
+        if (wrote) {
+            ++stats.eligible_evictions; stats.eligible_bytes += component.size_bytes;
+            ++stats.dump_objects; stats.dump_bytes += component.size_bytes;
+        } else if (component.on_storage()) {
+            ++stats.backed_evictions; stats.backed_bytes += component.size_bytes;
+        } else {
+            ++stats.eligible_evictions; stats.eligible_bytes += component.size_bytes;
+            ++stats.drop_objects; stats.lost_bytes += component.size_bytes;
+            ++stats.drop_action_objects; stats.drop_action_bytes += component.size_bytes;
+        }
+        stats.evicted_bytes += component.size_bytes;
+        stats.resident_bytes -= component.size_bytes;
+        --stats.resident_objects;
+        ++stats.evictions;
+        component.in_dram = false;
+        hybrid_->index.remove(v.kind, v.id);
+        hybrid_->cross_pool_reclaims += v.kind != kind;
     }
 }
 
@@ -185,6 +239,10 @@ void Simulator::hybrid_admit(NodeId id, std::size_t kind, TimestampNs now) {
             stats.resident_bytes;
     };
     while (c.size_bytes > capacity - used()) {
+        if (hybrid_->cost) {
+            hybrid_cost_evict(id, kind, c.size_bytes - (capacity - used()), now);
+            continue;
+        }
         std::size_t pool = kind;
         if (adaptive) {
             // Project the pending admission; unused target bytes can be borrowed.
@@ -258,6 +316,7 @@ void Simulator::hybrid_publish(NodeId id, std::size_t kind, std::uint64_t size, 
     stats.published_bytes += size;
     c.published = true;
     c.size_bytes = size;
+    if (hybrid_->cost) { hybrid_->cost->published(id, kind, now); }
     // A duplicate of an already readable immutable object is not a cache touch.
     if (c.in_dram || c.on_storage()) { return; }
     const auto& cfg = config_.hybrid_attention;
@@ -438,6 +497,7 @@ HybridPrefillResult Simulator::process_hybrid_prefill(const HybridPrefillRequest
     hybrid_->current_affinity_id = q.affinity_id;
     for (auto& sequences : hybrid_->read_sequences) { sequences.clear(); }
     hybrid_create_path(q.hash_ids, q.timestamp_ns);
+    if (hybrid_->cost) { hybrid_->cost->begin_request(q); }
     if (!config_.infinite_storage) {
         storage_policy_->on_request_begin(RequestContext{q.timestamp_ns, q.request_id,
             q.affinity_id, HashSpan{q.hash_ids.data(), q.hash_ids.size()}, {}}, storage_view());
@@ -551,6 +611,7 @@ HybridPrefillResult Simulator::process_hybrid_prefill(const HybridPrefillRequest
     stats.replayed_prefix_tokens += result.replayed_prefix_tokens;
     stats.new_suffix_tokens += result.new_suffix_tokens;
     stats.generated_checkpoints += generated_checkpoints;
+    if (hybrid_->cost) { hybrid_->cost->end_request(q.timestamp_ns); }
     return result;
 }
 

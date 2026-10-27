@@ -368,6 +368,25 @@ PYBIND11_MODULE(_core, module) {
         .def_readwrite("capacity_bytes", &StorageTierConfig::capacity_bytes)
         .def_readwrite("stream_count", &StorageTierConfig::stream_count);
 
+    py::class_<JointCostConfig>(module, "JointCostConfig")
+        .def(py::init<>())
+        .def_readwrite("horizons_seconds", &JointCostConfig::horizons_seconds)
+        .def_readwrite("wear_weight", &JointCostConfig::wear_weight)
+        .def_readwrite("nand_seconds_per_gib", &JointCostConfig::nand_seconds_per_gib)
+        .def_readwrite("storage_read_bytes_per_second", &JointCostConfig::storage_read_bytes_per_second)
+        .def_readwrite("storage_write_bytes_per_second", &JointCostConfig::storage_write_bytes_per_second)
+        .def_readwrite("gpu_bytes_per_second", &JointCostConfig::gpu_bytes_per_second)
+        .def_readwrite("prefill_tokens_per_second", &JointCostConfig::prefill_tokens_per_second)
+        .def_readwrite("candidates_per_kind", &JointCostConfig::candidates_per_kind)
+        .def_readwrite("scenario_limit", &JointCostConfig::scenario_limit)
+        .def_readwrite("reclaim_bytes", &JointCostConfig::reclaim_bytes)
+        .def_readwrite("sample_every", &JointCostConfig::sample_every)
+        .def_readwrite("samples", &JointCostConfig::samples)
+        .def_readwrite("seed", &JointCostConfig::seed)
+        .def_readwrite("nand_page_bytes", &JointCostConfig::nand_page_bytes)
+        .def_readwrite("nand_pages_per_block", &JointCostConfig::nand_pages_per_block)
+        .def_readwrite("overprovisioning", &JointCostConfig::overprovisioning);
+
     py::class_<HybridAttentionConfig>(module, "HybridAttentionConfig")
         .def(py::init<>())
         .def_readwrite("enabled", &HybridAttentionConfig::enabled)
@@ -398,7 +417,8 @@ PYBIND11_MODULE(_core, module) {
         .def_readwrite("eviction_mode", &HybridAttentionConfig::eviction_mode)
         .def_readwrite("full_retention_ns", &HybridAttentionConfig::full_retention_ns)
         .def_readwrite("linear_retention_ns", &HybridAttentionConfig::linear_retention_ns)
-        .def_readwrite("linear_retention_policy", &HybridAttentionConfig::linear_retention_policy);
+        .def_readwrite("linear_retention_policy", &HybridAttentionConfig::linear_retention_policy)
+        .def_readwrite("cost", &HybridAttentionConfig::cost);
 
     py::class_<HybridPrefillRequest>(module, "HybridPrefillRequest")
         .def(py::init<>())
@@ -922,6 +942,13 @@ PYBIND11_MODULE(_core, module) {
             result["size_bytes"] = c ? c->size_bytes : 0;
             result["demands"] = c ? c->demands : 0;
             result["last_demand_ns"] = c ? c->last_demand_ns : 0;
+            if (c && simulator.hybrid_stats().cost) {
+                const auto& cost = *simulator.hybrid_stats().cost;
+                const auto component = kind == "full" ? 0U : 1U;
+                const auto& h = cost.history(id, component);
+                result["logical_demands"] = h.count;
+                result["logical_last_ns"] = h.last_ns;
+            }
             result["storage_addresses"] = c ? c->storage_addresses : std::vector<std::uint64_t>{};
             if (c && c->on_storage() && !simulator.config().infinite_storage) {
                 const auto& node = simulator.tree().node(id);
@@ -988,6 +1015,42 @@ PYBIND11_MODULE(_core, module) {
                 result["storage"] = storage;
             }
             const auto& cfg = simulator.config().hybrid_attention;
+            if (state.cost) {
+                const auto& policy = *state.cost;
+                const auto& c = policy.counters();
+                py::dict row;
+                row["decisions"] = c.decisions; row["quotes"] = c.quotes;
+                row["infeasible_routes"] = c.infeasible;
+                row["scenario_evaluations"] = c.scenario_evaluations;
+                row["logical_full_demands"] = c.logical_full;
+                row["logical_linear_demands"] = c.logical_linear;
+                row["drop_cost"] = c.drop; row["saved_cost"] = c.benefit;
+                row["replacement_cost"] = c.replacement; row["media_cost"] = c.media;
+                row["queue_cost"] = c.queue; row["total_cost"] = c.total;
+                row["predicted_nand_bytes"] = c.predicted_nand_bytes;
+                row["selected_route_writes"] = c.selected_routes;
+                row["hazard_fit_squared_error"] = c.hazard_residual;
+                row["history_entries"] = policy.history_entries();
+                row["shared_model_bytes"] = policy.reuse().shared_bytes();
+                row["pending_forecasts"] = policy.reuse().pending_forecasts();
+                row["pending_payload_bytes"] = policy.reuse().pending_payload_bytes();
+                py::dict predictions;
+                for (std::size_t kind = 0; kind < 2; ++kind) {
+                    py::list samples;
+                    for (std::size_t h = 0; h < 3; ++h) {
+                        const auto& score = policy.reuse().scores(kind, h);
+                        py::dict sample;
+                        sample["horizon_seconds"] = cfg.cost.horizons_seconds[h];
+                        sample["samples"] = score.samples; sample["positives"] = score.positives;
+                        sample["censored"] = score.censored;
+                        sample["brier_sum"] = score.brier_sum;
+                        samples.append(sample);
+                    }
+                    predictions[kind == 0 ? "full" : "linear"] = samples;
+                }
+                row["reuse"] = predictions;
+                result["cost"] = row;
+            }
             if (cfg.pool_allocation != "fixed") {
                 py::dict row;
                 row["allocation"] = cfg.pool_allocation;
@@ -1038,7 +1101,7 @@ PYBIND11_MODULE(_core, module) {
                     row["dump_objects"] = c.dump_objects;
                     row["backed_evictions"] = c.backed_evictions;
                 }
-                if (cfg.eviction_mode == "retention") {
+                if (cfg.eviction_mode == "retention" || cfg.eviction_mode == "joint_cost") {
                     row["evicted_bytes"] = c.evicted_bytes;
                     row["eligible_bytes"] = c.eligible_bytes;
                     row["lost_bytes"] = c.lost_bytes;

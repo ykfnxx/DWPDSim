@@ -16,23 +16,33 @@ HybridRecoveryState::HybridRecoveryState(const RadixTree& tree,
             slot->remove_dram |= change.remove_dram;
             slot->remove_storage |= change.remove_storage;
             if (change.add_storage) { slot->add_storage = change.add_storage; }
+            slot->add_dram |= change.add_dram;
+            slot->suppress_storage |= change.suppress_storage;
+            slot->publish |= change.publish;
+            if (change.size_bytes) { slot->size_bytes = change.size_bytes; }
         }
     }
 }
 
 HybridCopyView HybridRecoveryState::component(NodeId id, std::size_t kind) const {
-    if (!tree_.contains(id) || !tree_.node(id).hybrid) { return {}; }
+    if (!tree_.contains(id)) { return {}; }
     const auto& node = tree_.node(id);
-    const auto& c = node.hybrid->components[kind];
-    HybridCopyView result{c.published, c.in_dram,
-        c.on_storage() ? std::optional<StorageTier>(node.storage_tier) : std::nullopt,
-        c.size_bytes};
+    HybridCopyView result;
+    if (node.hybrid) {
+        const auto& c = node.hybrid->components[kind];
+        result = {c.published, c.in_dram,
+            c.on_storage() ? std::optional<StorageTier>(node.storage_tier) : std::nullopt, c.size_bytes};
+    }
     const auto changed = changes_.find(id);
     if (changed != changes_.end() && changed->second[kind]) {
         const auto& change = *changed->second[kind];
         if (change.remove_dram) { result.in_dram = false; }
         if (change.remove_storage) { result.storage.reset(); }
         if (change.add_storage) { result.storage = change.add_storage; }
+        if (change.add_dram) { result.in_dram = true; }
+        if (change.suppress_storage) { result.storage.reset(); }
+        if (change.publish) { result.published = true; }
+        if (change.size_bytes) { result.size_bytes = change.size_bytes; }
     }
     return result;
 }

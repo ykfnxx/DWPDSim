@@ -95,6 +95,9 @@ Simulator::Simulator(
         hybrid_ = std::make_unique<HybridRuntime>();
         hybrid_->index.bind(tree_, config_.hybrid_attention);
         const auto& h = config_.hybrid_attention;
+        if (h.eviction_mode == "joint_cost") {
+            hybrid_->cost = std::make_unique<JointMemoryCostPolicy>(config_, tree_);
+        }
         if (h.pool_allocation == "adaptive") {
             // Before the first demand, use one generation span's payload as a prior.
             const auto span = h.checkpoint_generation == "request_end" ? h.tokens_per_block : h.checkpoint_interval_tokens;
@@ -273,6 +276,7 @@ void Simulator::finish(TimestampNs simulation_end_ns) {
         throw std::invalid_argument("simulation_end_ns precedes the last request");
     }
     run_until(simulation_end_ns);
+    if (hybrid_ && hybrid_->cost) { hybrid_->cost->finish(last_timestamp_ns_.value_or(0)); }
     trace_writer_.finish();
     if (hybrid_ && hybrid_->io.is_open()) { hybrid_->io.close(); }
     if (controller_windows_.is_open()) {
@@ -336,7 +340,7 @@ SimulationConfig Simulator::validate_config(SimulationConfig config) {
             h.drop_phase != d.drop_phase || h.pool_allocation != d.pool_allocation ||
             h.pool_decay_seconds != d.pool_decay_seconds || h.eviction_mode != d.eviction_mode ||
             h.full_retention_ns != d.full_retention_ns || h.linear_retention_ns != d.linear_retention_ns ||
-            h.linear_retention_policy != d.linear_retention_policy) {
+            h.linear_retention_policy != d.linear_retention_policy || !(h.cost == d.cost)) {
             throw std::invalid_argument("hybrid parameters require hybrid_attention.enabled=true");
         }
     } else {
@@ -386,8 +390,19 @@ SimulationConfig Simulator::validate_config(SimulationConfig config) {
                  h.linear_capacity_bytes > config.memory.capacity_bytes - h.full_capacity_bytes)))) {
             throw std::invalid_argument("hybrid pools require positive sizes and must fit the total memory budget");
         }
-        if (h.eviction_mode != "legacy" && h.eviction_mode != "retention") {
+        if (h.eviction_mode != "legacy" && h.eviction_mode != "retention" && h.eviction_mode != "joint_cost") {
             throw std::invalid_argument("unsupported hybrid eviction_mode");
+        }
+        if (h.eviction_mode == "joint_cost" && (config.infinite_storage || h.pool_allocation != "shared" ||
+            h.replay_mode != "prefix_replay" || h.full_policy != "lru_k" || h.linear_policy != "lru_k" ||
+            h.full_retention_ns || h.linear_retention_ns || h.linear_retention_policy != "idle" ||
+            h.full_drop_fraction || h.linear_drop_fraction || h.drop_phase != 0 || !h.dump_on_eviction ||
+            h.full_block_bytes > config.memory.capacity_bytes || h.linear_checkpoint_bytes > config.memory.capacity_bytes)) {
+            throw std::invalid_argument("joint_cost requires finite storage, shared prefix replay, LRU-K candidate indices, "
+                "objects fitting DRAM and no retention/drop quota overrides");
+        }
+        if (h.eviction_mode != "joint_cost" && !(h.cost == JointCostConfig{})) {
+            throw std::invalid_argument("custom cost parameters require eviction_mode=joint_cost");
         }
         if (h.linear_retention_policy != "idle" && h.linear_retention_policy != "frontier") {
             throw std::invalid_argument("unsupported hybrid linear_retention_policy");

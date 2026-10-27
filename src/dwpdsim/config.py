@@ -94,6 +94,28 @@ class StoragePolicyConfig:
 
 
 @dataclass(frozen=True, slots=True)
+class JointCostConfig:
+    """Age-conditioned restoration and route quotation model parameters."""
+
+    horizons_seconds: tuple[float, float, float] = (60, 300, 1800)
+    wear_weight: float = 1.0
+    nand_seconds_per_gib: tuple[float, float] = (0.05, 0.2)
+    storage_read_bytes_per_second: tuple[float, float] = (1e10, 1e10)
+    storage_write_bytes_per_second: tuple[float, float] = (2e9, 2e9)
+    gpu_bytes_per_second: float = 5e10
+    prefill_tokens_per_second: float = 60000
+    candidates_per_kind: int = 2
+    scenario_limit: int = 8
+    reclaim_bytes: int = 0
+    sample_every: int = 8
+    samples: int = 32
+    seed: int = 42
+    nand_page_bytes: int = 16384
+    nand_pages_per_block: int = 256
+    overprovisioning: float = 0.125
+
+
+@dataclass(frozen=True, slots=True)
 class HybridAttentionConfig:
     """Opt-in backend replay with chunked or request-end checkpoint generation."""
 
@@ -126,6 +148,7 @@ class HybridAttentionConfig:
     linear_retention_ns: int | None = None
     linear_retention_policy: str = "idle"
     checkpoint_generation: str = "chunked_prefill"
+    cost: JointCostConfig = field(default_factory=JointCostConfig)
 
 
 @dataclass(frozen=True, slots=True)

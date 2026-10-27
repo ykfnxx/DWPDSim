@@ -5,6 +5,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <tuple>
 #include <vector>
 
 namespace dwpdsim {
@@ -59,6 +60,32 @@ class HybridNodeStorage {
     std::unique_ptr<HybridNodeState> state_;
 };
 
+struct JointCostConfig {
+    std::array<double, 3> horizons_seconds{60, 300, 1800};
+    double wear_weight = 1;
+    std::array<double, 2> nand_seconds_per_gib{0.05, 0.2};
+    std::array<double, 2> storage_read_bytes_per_second{1e10, 1e10};
+    std::array<double, 2> storage_write_bytes_per_second{2e9, 2e9};
+    double gpu_bytes_per_second = 5e10, prefill_tokens_per_second = 60000;
+    std::uint64_t candidates_per_kind = 2, scenario_limit = 8;
+    std::uint64_t reclaim_bytes = 0;
+    std::uint64_t sample_every = 8, samples = 32, seed = 42;
+    std::uint64_t nand_page_bytes = 16384, nand_pages_per_block = 256;
+    double overprovisioning = 0.125;
+    bool operator==(const JointCostConfig& r) const {
+        return std::tie(horizons_seconds, wear_weight, nand_seconds_per_gib,
+            storage_read_bytes_per_second, storage_write_bytes_per_second,
+            gpu_bytes_per_second, prefill_tokens_per_second, candidates_per_kind,
+            scenario_limit, reclaim_bytes, sample_every, samples, seed, nand_page_bytes,
+            nand_pages_per_block, overprovisioning) ==
+            std::tie(r.horizons_seconds, r.wear_weight, r.nand_seconds_per_gib,
+            r.storage_read_bytes_per_second, r.storage_write_bytes_per_second,
+            r.gpu_bytes_per_second, r.prefill_tokens_per_second, r.candidates_per_kind,
+            r.scenario_limit, r.reclaim_bytes, r.sample_every, r.samples, r.seed, r.nand_page_bytes,
+            r.nand_pages_per_block, r.overprovisioning);
+    }
+};
+
 struct HybridAttentionConfig {
     bool enabled = false;
     std::uint64_t full_capacity_bytes = 0;
@@ -88,6 +115,7 @@ struct HybridAttentionConfig {
     std::optional<std::uint64_t> full_retention_ns, linear_retention_ns;
     std::string linear_retention_policy = "idle";
     std::string checkpoint_generation = "chunked_prefill";
+    JointCostConfig cost{};
 };
 
 struct HybridPrefillRequest {

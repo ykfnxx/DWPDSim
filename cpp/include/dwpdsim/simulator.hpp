@@ -80,7 +80,10 @@ class Simulator {
     void hybrid_create_path(const std::vector<HashId>& path, TimestampNs now);
     void hybrid_admit(NodeId id, std::size_t kind, TimestampNs now);
     void hybrid_update_pool_targets(std::uint64_t full_blocks, std::uint64_t tokens, TimestampNs now);
-    void hybrid_write(NodeId id, std::size_t kind, TimestampNs now);
+    void hybrid_write(NodeId id, std::size_t kind, TimestampNs now,
+        std::optional<Placement> quoted_placement = std::nullopt);
+    void hybrid_cost_evict(NodeId incoming, std::size_t kind,
+        std::uint64_t required_bytes, TimestampNs now);
     std::uint64_t hybrid_io(NodeId id, std::size_t kind, const char* operation, TimestampNs now,
         TraceReason reason = TraceReason::StorageHit,
         std::optional<MoveId> move = std::nullopt,

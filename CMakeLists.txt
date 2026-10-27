@@ -18,6 +18,7 @@ add_library(
     cpp/src/hybrid_recovery.cpp
     cpp/src/policies/memory/hybrid_memory_policy.cpp
     cpp/src/policies/memory/age_reuse.cpp
+    cpp/src/policies/memory/joint_cost.cpp
     cpp/src/metrics.cpp
     cpp/src/shadow_ftl.cpp
     cpp/src/policies/memory/baseline_memory_lru_policy.cpp

@@ -15,6 +15,10 @@ struct HybridCopyChange {
     std::size_t kind = 0;
     bool remove_dram = false, remove_storage = false;
     std::optional<StorageTier> add_storage;
+    bool add_dram = false;
+    bool suppress_storage = false;
+    bool publish = false;
+    std::uint64_t size_bytes = 0;
 };
 
 struct HybridCopyView {

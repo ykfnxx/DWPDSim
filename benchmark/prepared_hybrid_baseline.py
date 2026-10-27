@@ -10,9 +10,11 @@ import hashlib
 import json
 import mmap
 import resource
+import shutil
+import subprocess
 import sys
 import time
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from pathlib import Path
 
 import numpy as np
@@ -21,6 +23,7 @@ import dwpdsim
 from dwpdsim import (
     DWPDSimulator,
     HybridPrefillRequest,
+    JointCostConfig,
     MemoryConfig,
     SimulationConfig,
     StoragePolicyConfig,
@@ -42,15 +45,21 @@ def configuration(manifest, args):
     slc = args.capacity_tb * 10**12 // (3 * unit) * unit
     infinite = args.storage_policy == "infinite_storage"
     profile = kimi_k3_profile(tokens_per_block=manifest["tokens_per_block"])
+    hybrid = profile.hybrid_config(lru_k=args.k, emit_io_trace=args.emit_io_trace)
+    if args.memory_policy == "joint_cost":
+        hybrid = replace(hybrid, eviction_mode="joint_cost", cost=JointCostConfig(
+            wear_weight=args.cost_weight, candidates_per_kind=args.cost_candidates,
+            scenario_limit=args.cost_scenarios, reclaim_bytes=args.cost_reclaim_bytes,
+        ))
     return SimulationConfig(
         memory=MemoryConfig(args.memory_bytes), block_size_bytes=unit,
-        slc=StorageTierConfig(unit if infinite else slc, 1),
-        tlc=StorageTierConfig(unit if infinite else 2 * slc, 1),
+        slc=StorageTierConfig(unit if infinite else slc, args.streams),
+        tlc=StorageTierConfig(unit if infinite else 2 * slc, args.streams),
         storage_policy=StoragePolicyConfig(
             kind=args.storage_policy, slc_host_share=3 / 17,
             slc_erase_budget=3, tlc_erase_budget=7,
         ),
-        hybrid_attention=profile.hybrid_config(lru_k=args.k, emit_io_trace=args.emit_io_trace),
+        hybrid_attention=hybrid,
         simulation_end_ns=round(args.end_seconds * 10**9),
     )
 
@@ -72,7 +81,8 @@ def audit_stats(stats, cfg, count, tokens, checkpoints):
     assert pool["resident_bytes"] <= pool["peak_resident_bytes"] <= cfg.memory.capacity_bytes
     for c in ("full", "linear"):
         component = stats[c]
-        assert component["drop_objects"] == 0
+        if cfg.hybrid_attention.eviction_mode != "joint_cost":
+            assert component["drop_objects"] == 0
         assert component["dram_hits"] + component["storage_hits"] == component["demands"]
     if cfg.storage_policy.kind != "infinite_storage":
         for operation in ("read", "write"):
@@ -96,6 +106,17 @@ def run(args):
     cfg = configuration(manifest, args)
     args.output.mkdir(parents=True, exist_ok=False)
     (args.output / "config.json").write_text(json.dumps(asdict(cfg), indent=2) + "\n")
+    root = Path(__file__).resolve().parents[1]
+    native_path = Path(_core.__file__)
+    native_sha256 = digest(native_path)
+    shutil.copy2(native_path, args.output / native_path.name)
+    runtime_sources = [*root.glob("cpp/**/*.cpp"), *root.glob("cpp/**/*.hpp"),
+                       *root.glob("src/**/*.py"), root / "CMakeLists.txt", Path(__file__)]
+    source_hashes = {str(path.relative_to(root)): digest(path) for path in runtime_sources}
+    provenance = {"native_sha256": native_sha256, "sources": source_hashes,
+                  "git_head": subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=root,
+                                                      text=True).strip()}
+    (args.output / "provenance.json").write_text(json.dumps(provenance, indent=2) + "\n")
     print(json.dumps({"phase": "start", "policy": args.storage_policy,
                       "capacity_tb": None if args.storage_policy == "infinite_storage" else args.capacity_tb,
                       "expected_requests": args.requests or manifest["requests"],
@@ -127,6 +148,8 @@ def run(args):
                 if args.requests and count >= args.requests:
                     break
                 row = json.loads(line)
+                if row["timestamp_ns"] >= cfg.simulation_end_ns:
+                    break
                 assert last_timestamp <= row["timestamp_ns"] <= cfg.simulation_end_ns
                 assert row["sequence"] > last_sequence
                 current_hour = row["timestamp_ns"] // HOUR_NS
@@ -186,9 +209,14 @@ def run(args):
         "cache_implementation_revision": profile.cache_implementation_revision,
         "package_path": str(Path(dwpdsim.__file__).resolve()),
         "native_extension_path": str(Path(_core.__file__).resolve()),
-        "native_extension_sha256": digest(Path(_core.__file__)),
+        "native_extension_sha256": native_sha256,
+        "native_unchanged_during_run": digest(native_path) == native_sha256,
+        "runtime_sources_unchanged": all(digest(root / path) == value
+                                         for path, value in source_hashes.items()),
+        "git_head": provenance["git_head"],
         "runner_sha256": digest(Path(__file__)), "python_version": sys.version,
         "config": asdict(cfg), "cache_start": "empty", "timeline": manifest["timeline"],
+        "memory_policy": args.memory_policy,
         "scope": "complete input-only hybrid logical replay; original branch identities and timing; no inferred decode supply or physical SSD timing/WAF",
         "replay_seconds": elapsed, "aggregate_call_seconds": call_seconds,
         "timing_scope": "replay includes input mmap reads, adaptation, construction, finish and close; excludes digest verification and serialization",
@@ -210,6 +238,12 @@ def main():
     parser.add_argument("--capacity-tb", type=int, choices=(1, 4), default=4)
     parser.add_argument("--memory-bytes", type=int, default=100_000_000_000)
     parser.add_argument("--k", type=int, default=2)
+    parser.add_argument("--memory-policy", choices=("baseline", "joint_cost"), default="baseline")
+    parser.add_argument("--streams", type=int, default=1)
+    parser.add_argument("--cost-weight", type=float, default=1)
+    parser.add_argument("--cost-candidates", type=int, default=2)
+    parser.add_argument("--cost-scenarios", type=int, default=8)
+    parser.add_argument("--cost-reclaim-bytes", type=int, default=0)
     parser.add_argument("--batch-size", type=int, default=32)
     parser.add_argument("--end-seconds", type=float, default=86400)
     parser.add_argument("--requests", type=int, default=0, help="0 replays every request")

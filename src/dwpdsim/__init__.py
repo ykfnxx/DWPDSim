@@ -2,6 +2,7 @@
 
 from dwpdsim.config import (
     HybridAttentionConfig,
+    JointCostConfig,
     MemoryConfig,
     MemoryPolicyConfig,
     SimulationConfig,
@@ -26,6 +27,7 @@ __all__ = [
     "HybridEvent",
     "HybridPrefillRequest",
     "InputConfig",
+    "JointCostConfig",
     "KimiK3Profile",
     "MemoryConfig",
     "MemoryPolicyConfig",

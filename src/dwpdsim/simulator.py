@@ -38,7 +38,13 @@ class DWPDSimulator:
 
         hybrid = _core.HybridAttentionConfig()
         for key, value in asdict(config.hybrid_attention).items():
-            setattr(hybrid, key, value)
+            if key == "cost":
+                cost = _core.JointCostConfig()
+                for parameter, setting in value.items():
+                    setattr(cost, parameter, setting)
+                hybrid.cost = cost
+            else:
+                setattr(hybrid, key, value)
         core_config.hybrid_attention = hybrid
         if config.hybrid_attention.enabled and config.memory_policy != MemoryPolicyConfig():
             raise ValueError("hybrid mode uses hybrid_attention policies; legacy memory_policy must be default")

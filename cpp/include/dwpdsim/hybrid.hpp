@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "dwpdsim/hybrid_types.hpp"
+#include "dwpdsim/policies/memory/joint_cost.hpp"
 #include "dwpdsim/policies/memory/indexed_memory_lru_policy.hpp"
 #include "dwpdsim/radix_tree.hpp"
 
@@ -49,6 +50,8 @@ class HybridMemoryIndex {
         const HybridAttentionConfig& config, TimestampNs now,
         std::array<HybridCounters, 2>& counters, const std::array<bool, 2>& legacy_drop,
         std::size_t incoming_kind, NodeId incoming, std::uint64_t capacity) const;
+    std::vector<std::vector<HybridCostObject>> cost_candidates(const RadixTree& tree,
+        std::uint64_t required_bytes, std::size_t groups) const;
   private:
     struct ReferenceHistory {
         std::vector<std::uint64_t> requests;
@@ -77,6 +80,7 @@ class HybridMemoryIndex {
 
 struct HybridRuntime {
     HybridMemoryIndex index;
+    std::unique_ptr<JointMemoryCostPolicy> cost;
     std::array<HybridCounters, 2> counters;
     HybridPrefillCounters prefill;
     std::optional<std::uint64_t> last_sequence;

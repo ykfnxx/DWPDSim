@@ -2,12 +2,12 @@
 
 **Status**: 🔄 In Progress
 **Started**: 2026-10-27
-**Last updated**: 2026-10-27 11:34 UTC
-**Current stage**: 1. Online age-conditioned demand estimator and joint recovery value
+**Last updated**: 2026-10-27 12:10 UTC
+**Current stage**: 2. Complete route quotations, physical cost and atomic plan execution
 
 ## TODO
 - [x] 0. Freeze the shared-DRAM baseline and implementation contract
-- [ ] 1. Online age-conditioned demand estimator and joint recovery value
+- [x] 1. Online age-conditioned demand estimator and joint recovery value
 - [ ] 2. Complete route quotations, physical cost and atomic plan execution
 - [ ] 3. Cost-driven shared DRAM victim and Drop/Dump selection
 - [ ] 4. Functional, native, Python and device regression verification
@@ -47,3 +47,24 @@ IMPORTANT: These two components are compiled but NOT YET CONNECTED to the execut
 
 Baseline experiment location build/age-route-cost; primary checkout snapshot ad50b96; main-based development baseline commit 994f3a7. Reference checkout and its dirty changes remain untouched. .gitattributes exempts literal .patch context from whitespace lint without modifying the MQSim patch. No background benchmark process remains from the three baseline jobs.
 Rebuilt-current-native Python regression completed: 519 passed, 2 optional-dependency skips in 3.50s. Ruff and current diff whitespace checks passed. Stage 1 remains in progress because logical-demand/scenario integration and selectable policy are not implemented yet.
+Stage 1 integrated into prefix replay: raw FULL and applicable LINEAR observations precede cache actions, including misses; publication starts only cold count-zero history; uniform known-object landmark sampling and actual-observation-tail censoring. Common historical path prototypes fit nonnegative marked-Poisson hazard increments; next affected request scenarios are shared by all candidate plans. Six new public Python cases passed before the bulk-reclaim refinement. This demand-law approximation and finite scenario coverage require dataset validation, not a claim that marginals identify the true joint law.
+
+### [11:57] 2. Complete route quotations, physical cost and atomic plan execution
+Starting...
+
+### Integrated policy and first real-data iteration
+Implemented selectable hybrid eviction_mode=joint_cost (finite storage, shared DRAM, prefix_replay and LRU-K indices; incompatible profiles throw). JointCostConfig is forwarded through public Python/C++ APIs. JointMemoryCostPolicy observes all raw FULL inputs and every applicable published LINEAR prefix endpoint independently of cache residency; count-zero publication does not count as demand. Bounded uniform landmark sampling and finish censoring are live. Shared historical path prototypes, regularized nonnegative Poisson intensity fitting and first-affected-request masses form an explicit approximate joint demand law. No multiplication of block probabilities into a joint hit.
+
+Complete candidate groups are cold LRU-K groups of at least the reclaim quantum (default one LINEAR checkpoint) and compete by cost per released byte. Quotes enumerate tier/stream and inherit an existing same-prefix bundle placement where required. Capacity quotes call existing read-only reclaim_for with earlier planned victims excluded; recursive destination reservation covers capacity migration. This is bounded current-leaf quote search, not exhaustive cascade optimization. Selected capacity actions and writes execute exactly once; insufficient quoted capacity or action failure throws, with no Dump-to-Drop downgrade. Existing storage background/access policies remain active.
+
+Media quote uses marginal programs, mapping allowance (one page/data block), partial stream-frontier mixing and TRIM credits, migration destination programs and current-pool pressure; it is a model, not measured NAND WAF. New-copy survival uses pool-write-rate lifetime, one expected SSD return (DRAM hits do not refresh storage recency), actual idle ticks and common stratified draws. Default physical proxy currently uses 16KiB pages and 256 pages/block; reference MQSim uses 4224 pages/block, so formal device comparisons MUST pass matching model geometry rather than claim existing defaults match hardware.
+
+Added tests/test_joint_cost.py: public baseline-vs-cost inputs/recovery oracle, raw logical demand after last-copy loss, tier-price route changes, finite trace address/dependency/byte ledger, trace-on/off determinism and pending-request checkpoint regression. Current Python suite 526 passed, 2 optional skips. Debug build succeeded; prior 7/7 CTest passed before the latest promise/prior change; rerun current Debug CTest before a final verification claim. Ruff clean. Current baseline RR1TB1800s stats exactly equal frozen baseline in every field (1584 requests, 91.031167087% joint hit).
+
+V1 real-data cost run (same 1800s/1584 requests, candidates1/scenarios4) is terminal: 25.1304517231% joint hit, 398.521s. This is a failed diagnostic iteration, not a successful policy result. First bug: value ignored pending request-end checkpoints and upcoming FULL publications, undervaluing incomplete current prefixes. Fixed with quotation-only published/DRAM promises for remaining known request objects plus incoming admission. Actual hit tests still use actual published copies only. Added terminal-count path prior and shorter LINEAR endpoint templates. V2 is running via exec session 63715, directory build/age-route-cost/cost-rr-1tb-1800s-v2; latest 352 requests/105s showed ~59.22% hit, so more model iteration is needed, not goal completion.
+
+IMPORTANT numerical/accounting issue to investigate next: media_quote currently charges full WRITE/relocation service time as queue cost. This may dominate expected reuse value even at wear_weight=0 and contributes to aggressive Drop. Correct C_queue should be incremental queued waiting/critical path beyond uncontended service, not the intrinsic write service time again. Proposed implementation: track per-pool busy_until from observed READ/WRITE; quote the whole action DAG twice (actual backlog vs empty queues), preserving migration READ->WRITE dependencies; charge only makespan difference, and account for copy readiness in future value. First save current V2 source/native so iteration remains attributable.
+
+Performance issue next: value() repeatedly copies the common pending-publication delta into every plan/survival draw. Add a parent-layer HybridRecoveryState so the shared admission/promise projection is built once; apply only small plan and survival deltas. Cache identical Drop values per candidate group and skip duplicate no-write route quotes. This is a necessary quotation representation change, not a full tree/FTL snapshot.
+
+Provenance: V1 old runner hashes the extension only at END; the live process loaded V1 before V2 pip replacement, so its recorded native SHA may be wrong. Correct diagnostic provenance using the already-completed cost-rr-1tb-60s-v1 native SHA (same V1 install), preserving raw result and clearly marking diagnostic recovery; do not claim a formal frozen binary for V1. New runner captures native SHA and copies the loaded-version binary at START, saves runtime-source hashes in provenance.json, reports end unchanged flags and Git HEAD. V2 has this new start provenance and native copy. No runtime source edits have occurred since V2 start (tests/progress are outside captured runtime sources). Preserve this fact or explicitly record changes.
