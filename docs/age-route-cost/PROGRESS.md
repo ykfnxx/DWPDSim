@@ -2,8 +2,8 @@
 
 **Status**: 🔄 In Progress
 **Started**: 2026-10-27
-**Last updated**: 2026-10-27 11:26 UTC
-**Current stage**: 0. Freeze the shared-DRAM baseline and implementation contract
+**Last updated**: 2026-10-27 11:34 UTC
+**Current stage**: 1. Online age-conditioned demand estimator and joint recovery value
 
 ## TODO
 - [x] 0. Freeze the shared-DRAM baseline and implementation contract
@@ -32,3 +32,18 @@ Scope remains the complete age-conditioned Drop/Dump cost with FULL/LINEAR recov
 ### [11:22] 0. Freeze the shared-DRAM baseline and implementation contract
 Starting...
 Baseline verified: 519 pytest passed, 2 optional skips; Debug CTest 5/5; Ruff passed. Three empty-cache replays use exactly 1584 requests in [0,1800), 100GB shared DRAM and one frozen native. RR1TB hit=0.9103116708701912, RR4TB/infinite=0.9177967326041864. 126 imported source hashes verified. Evidence and frozen native: build/age-route-cost/baseline-audit.json and baseline-native.so. Stage 0 complete.
+
+### [11:27] 1. Online age-conditioned demand estimator and joint recovery value
+Starting... Baseline source committed as 994f3a7. Imported MQSim patch context contains intentional leading diff spaces and tabs; do not rewrite patch contents to satisfy generic whitespace lint.
+
+### Stage 1 component implementation checkpoint
+Added cpp/include/dwpdsim/policies/memory/age_reuse.hpp and its C++ implementation. AgeReuseEstimator implements separate FULL/LINEAR age-first hierarchical shared tables (32/64/64/256 strengths), a distinct count-zero cold-publication group, mature-deadline labels, frozen issue-time features/predictions, equal-weight PAVA over three horizons, and explicit tail censoring. settle_before(now) must run BEFORE recording the current logical request; equal-time deadlines stay open until the timestamp advances. finish uses the actual observation end. No next-use arrays or cache-hit labels. The caller owns logical count/last/gap history; sampled forecasts read current count through a C++ callable. No Python hot-path callbacks.
+
+Added hybrid_recovery.hpp/cpp: read-only per-copy delta view over the same RadixTree, no tree copies or rollback; deepest continuous-FULL + readable-LINEAR endpoint with N-1/max-prefix limits. Loads use allocated SSD bytes, payload GPU bytes and disjoint-pool bulk reads; GPU upload follows reads, then fixed-throughput suffix compute. This first time model is explicit and not measured TTFT. Queue/interference costs remain a separate future quote. Joint FULL+LINEAR deletion is evaluated once, including fallback endpoint changes.
+
+New public module integration cases pass for current-age separation, uniform mature labels, same-time reuse, horizon-edge demand, censoring, independent component tables, joint restore A/B from FULL A/B/C + LINEAR B, shared loss without double counting, backed eviction/mixed media, read-only state and N-1 recovery limits. Current Debug CTest 7/7 passed. Rebuilt editable native; full Python regression is being checked before the next checkpoint.
+
+IMPORTANT: These two components are compiled but NOT YET CONNECTED to the executor or a selectable cost policy. Stage 1 is still incomplete. Do not claim a new policy result from the frozen baselines. Next: add cost configuration, logical-demand observation (FULL all input blocks; LINEAR applicability independent of residency), bounded causal landmark sampling and historical joint request scenarios. Then read-only complete route quotation + exact commit, marginal media/GC/migration accounting, and shared-DRAM cost victim selection. Preserve full objective; do not replace route-aware physical estimation with size times average WAF, independently sum FULL/LINEAR losses, assume marginal block probabilities identify a joint request law, or silently fall back to legacy selection.
+
+Baseline experiment location build/age-route-cost; primary checkout snapshot ad50b96; main-based development baseline commit 994f3a7. Reference checkout and its dirty changes remain untouched. .gitattributes exempts literal .patch context from whitespace lint without modifying the MQSim patch. No background benchmark process remains from the three baseline jobs.
+Rebuilt-current-native Python regression completed: 519 passed, 2 optional-dependency skips in 3.50s. Ruff and current diff whitespace checks passed. Stage 1 remains in progress because logical-demand/scenario integration and selectable policy are not implemented yet.

@@ -15,7 +15,9 @@ add_library(
     STATIC
     cpp/src/hybrid_simulator.cpp
     cpp/src/hybrid_storage.cpp
+    cpp/src/hybrid_recovery.cpp
     cpp/src/policies/memory/hybrid_memory_policy.cpp
+    cpp/src/policies/memory/age_reuse.cpp
     cpp/src/metrics.cpp
     cpp/src/shadow_ftl.cpp
     cpp/src/policies/memory/baseline_memory_lru_policy.cpp
@@ -51,6 +53,12 @@ install(
 option(DWPDSIM_BUILD_TESTS "Build C++ integration tests" OFF)
 if(DWPDSIM_BUILD_TESTS)
     enable_testing()
+    add_executable(age_reuse_integration_test tests/cpp/age_reuse_integration_test.cpp)
+    target_link_libraries(age_reuse_integration_test PRIVATE dwpdsim_core)
+    add_test(NAME age_reuse_integration_test COMMAND age_reuse_integration_test)
+    add_executable(hybrid_recovery_integration_test tests/cpp/hybrid_recovery_integration_test.cpp)
+    target_link_libraries(hybrid_recovery_integration_test PRIVATE dwpdsim_core)
+    add_test(NAME hybrid_recovery_integration_test COMMAND hybrid_recovery_integration_test)
     add_executable(hybrid_memory_integration_test tests/cpp/hybrid_memory_integration_test.cpp)
     target_link_libraries(hybrid_memory_integration_test PRIVATE dwpdsim_core)
     add_test(NAME hybrid_memory_integration_test COMMAND hybrid_memory_integration_test)
