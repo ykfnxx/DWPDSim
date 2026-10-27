@@ -13,7 +13,10 @@ LINEAR/KDA checkpoint 独立管理，支持两类对象的 LRU-K 基线。真正
 混合回放默认 `pool_allocation="shared"`：FULL 和 LINEAR 在 `memory.capacity_bytes` 总预算内
 按全局 LRU-K/LRU 次序竞争，不设置类型配额或需求软目标。WEKA runner 默认总 DRAM 为
 100 GB，两个组件配额为 0；历史 fixed/adaptive 分配需显式选择。共享 DRAM 基线及验证结果见
-[更正说明](report/shared-dram-correction.md)，完整 Gandalf 代价策略尚未实现。
+[更正说明](report/shared-dram-correction.md)。实验性 `eviction_mode="joint_cost"` 在相同共享预算内
+联合选择 Drop、Dump 和 tier/stream，并估计空闲时间条件复用概率、联合恢复损失及边际 NAND 成本；
+模型、约束与实验边界见 [设计说明](docs/age-route-cost/DESIGN.md)。它是独立研究实现，
+不代表完整复现 Gandalf。
 
 ## 行为语义
 
@@ -33,7 +36,8 @@ LINEAR/KDA checkpoint 独立管理，支持两类对象的 LRU-K 基线。真正
 - adaptive-endurance policy 的后台 tick 独立于前台请求运行。相同 timestamp 的 tick 先执行，`finish()` 会将
   虚拟时间推进至配置中冻结的 `simulation_end_ns`；Python `finish()` 不另接收终点参数。
 
-DWPDSim 不模拟 SSD 内部 GC、NAND latency、擦除或物理写放大；这些由下游 MQSim 计算。
+DWPDSim 不执行 SSD 内部 GC、NAND latency、擦除或物理写放大模拟；这些由下游 MQSim 计算。
+`joint_cost` 的在线预测值与 MQSim 实测量分别报告。
 
 ## 安装与验证
 

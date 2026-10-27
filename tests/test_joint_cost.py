@@ -225,3 +225,19 @@ def test_disjoint_branches_keep_their_own_first_demand_mass(tmp_path):
                               nand_seconds_per_gib=(0, 0)), tmp_path / "branches", count=54)
     cost = stats["cost"]
     assert cost["expected_first_requests"] > cost["decisions"]
+
+
+def test_short_prompt_without_complete_hash_blocks_matches_baseline(tmp_path):
+    cfg = configuration()
+    observations = []
+    for name, selected in (("cost", cfg), ("baseline", replace(
+        cfg, hybrid_attention=replace(cfg.hybrid_attention, eviction_mode="legacy", cost=JointCostConfig()),
+    ))):
+        with DWPDSimulator(selected, tmp_path / name) as sim:
+            result = sim.process_hybrid_prefill(HybridPrefillRequest(0, 0, 0, [], input_tokens=1))
+            assert result["restore_tokens"] == 0 and result["prefill_compute_tokens"] == 1
+            sim.process_hybrid_prefill(HybridPrefillRequest(10**9, 1, 1, [1, 2], input_tokens=5))
+            sim.process_hybrid_prefill(HybridPrefillRequest(2 * 10**9, 2, 2, [], input_tokens=1))
+            observations.append(sim.hybrid_stats())
+    assert observations[0]["prefill"] == observations[1]["prefill"]
+    assert observations[0]["cost"]["logical_full_demands"] == 2

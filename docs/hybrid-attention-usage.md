@@ -66,7 +66,8 @@ with DWPDSimulator(config, "build/hybrid-example") as sim:
 | drop_phase | 0 | [0,1) 内的配额初始相位，用于敏感性实验；非零时需配置 Drop 配额 |
 | pool_allocation | shared | shared 在总 memory 字节预算内全局选择候选，不设置类型目标；fixed/adaptive 为显式历史实验模式 |
 | pool_decay_seconds | 300 | 仅 adaptive 根据当前请求更新需求质量；其他分配模式保持默认 |
-| eviction_mode | legacy | retention 根据闲置阈值决定 Dump/Drop；不能与配额或 frontier_guard 混用 |
+| eviction_mode | legacy | retention 使用闲置阈值；joint_cost 使用联合恢复与路由边际成本；两者均不能与 Drop 配额混用 |
+| cost | JointCostConfig() | joint_cost 的复用时域、媒体价格、吞吐、搜索预算和 NAND 几何参数 |
 | full_retention_ns / linear_retention_ns | None | retention 模式中，所选 FULL 段/LINEAR state 闲置严格大于阈值才 Drop；None 表示 Dump |
 | linear_retention_policy | idle | frontier 额外允许 Drop 有驻留后继或完整待准入 LINEAR 后继的祖先 checkpoint |
 
@@ -76,7 +77,34 @@ with DWPDSimulator(config, "build/hybrid-example") as sim:
 
 精确对象模式的发布可提供 `size_bytes` 覆盖默认大小，prefix_replay 发布必须符合模型固定大小；同一不可变对象再次发布时大小必须一致。对象大于固定池或共享总容量时直接写入后备存储，旁路 DRAM。
 
-Kimi-K3 默认使用 shared + LRU-K，载荷与回放条件见 [模型配置](kimi-k3.md)。这实现了共享容量的基线，尚未实现 Gandalf 的 Drop/Move 代价估计及准入算法。retention 和 Drop 配额继续由显式参数控制。shared 的 `pool` 统计包含总容量、当前/峰值驻留及 `cross_component_reclaims`，不返回类型目标；adaptive 继续报告软目标与跨池回收。retention 模式包含 action Drop、末副本丢失及回收/写入字节统计。
+Kimi-K3 默认使用 shared + LRU-K，载荷与回放条件见 [模型配置](kimi-k3.md)。实验性 `joint_cost` 是独立的代价策略，模型与边界见 [设计说明](age-route-cost/DESIGN.md)，不代表完整复现 Gandalf。retention 和 Drop 配额继续由显式参数控制。shared 的 `pool` 统计包含总容量、当前/峰值驻留及 `cross_component_reclaims`，不返回类型目标；adaptive 继续报告软目标与跨池回收。retention/joint_cost 模式包含 action Drop、末副本丢失及回收/写入字节统计。
+
+`joint_cost` 要求有限 SSD、shared、prefix_replay、两类 lru_k，以及每个对象可装入 DRAM。
+请求通过 `process_hybrid_prefill` 提交；额外 `HybridEvent` 仅允许 observe。使用示例：
+
+```python
+from dataclasses import replace
+from dwpdsim import JointCostConfig, kimi_k3_profile
+
+hybrid = replace(
+    kimi_k3_profile(tokens_per_block=64).hybrid_config(lru_k=2),
+    eviction_mode="joint_cost",
+    cost=JointCostConfig(
+        wear_weight=1,
+        nand_pages_per_block=4224,
+        mapping_pages_per_block=0,  # 对齐参考 MQSim 的 Ideal_Mapping_Table=true
+    ),
+)
+```
+
+默认未来时域为 60/300/1800 秒，使用距离上次逻辑需求的时间、历史次数/间隔及祖先历史。
+未成熟标签在回放尾部被删失，不能当作负例。`stats.cost` 给出成熟/删失数、Brier 和、
+Drop/挽回/SSD 替换/媒体/请求等待各项成本及预测 NAND 字节。预测值不是实际 WAF 或 TTFT。
+已有 SSD 副本不重复写入；完整容量受害者和迁移链进入同一次联合恢复估计。
+
+`benchmark/joint_cost_experiment.py` 从空缓存运行相同数据的 baseline/cost 配对实验，
+保存配置、数据与源文件校验和及 native 副本。输出目录必须不存在。设备功能验证使用
+`benchmark/joint_cost_device_smoke.py`；物理 WAF 需要另行冻结设备几何和测量窗口。
 
 没有后备副本且设置 `dump_on_eviction=False` 时，移除最后副本后返回 `lost`。当前 benefit 只使用需求频率与读取成本代理，不预测此情况下的引擎重算损失。
 

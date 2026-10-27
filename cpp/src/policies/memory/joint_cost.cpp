@@ -123,7 +123,7 @@ void JointMemoryCostPolicy::begin_request(const HybridPrefillRequest& q) {
         }
     }
     ++requests_;
-    ++records_.at(q.hash_ids.back()).terminal_count;
+    if (!q.hash_ids.empty()) { ++records_.at(q.hash_ids.back()).terminal_count; }
     prediction_cache_.clear();
 }
 
@@ -590,13 +590,20 @@ HybridCostQuote JointMemoryCostPolicy::select(
     const std::vector<std::vector<HybridCostObject>>& candidates, HybridCostObject incoming,
     StoragePolicy& policy, const StorageView& storage, TimestampNs now) {
     std::vector<HybridCostQuote> quotes;
-    for (const auto& objects : candidates) {
+    std::vector<std::size_t> groups;
+    for (std::size_t group = 0; group < candidates.size(); ++group) {
+        const auto& objects = candidates[group];
         quotes.push_back(*draft(objects, {}, policy, storage, now));
+        groups.push_back(group);
+        if (std::all_of(objects.begin(), objects.end(), [&](const auto& object) {
+            return tree_.node(object.id).hybrid->components[object.kind].on_storage();
+        })) { continue; }
         for (const auto tier : {StorageTier::Slc, StorageTier::Tlc}) {
             const auto streams = tier == StorageTier::Slc ? config_.slc.stream_count : config_.tlc.stream_count;
             for (std::uint32_t stream = 0; stream < streams; ++stream) {
                 const auto quote = draft(objects, Placement{tier, stream}, policy, storage, now);
-                if (quote) { quotes.push_back(*quote); } else { ++counters_.infeasible; }
+                if (quote) { quotes.push_back(*quote); groups.push_back(group); }
+                else { ++counters_.infeasible; }
             }
         }
     }
@@ -626,6 +633,7 @@ HybridCostQuote JointMemoryCostPolicy::select(
     }
     const HybridRecoveryState admitted(tree_, admission);
     const auto base = value(scenes, admitted, {}, policy, storage, now, busy_until_);
+    std::vector<std::optional<Value>> dropped_values(candidates.size());
     std::optional<std::size_t> best;
     double best_loss = 0;
     for (std::size_t i = 0; i < quotes.size(); ++i) {
@@ -635,8 +643,11 @@ HybridCostQuote JointMemoryCostPolicy::select(
             return value(scenes, admitted, changes(q, writes, capacity), policy, storage, now,
                 writes ? q.queue_until : busy_until_);
         };
-        const auto dropped = evaluate(false, false), persisted = evaluate(true, false);
-        const auto final = evaluate(true, true);
+        auto& cached_drop = dropped_values[groups[i]];
+        if (!cached_drop) { cached_drop = evaluate(false, false); }
+        const auto dropped = *cached_drop;
+        const auto persisted = q.writes.empty() ? dropped : evaluate(true, false);
+        const auto final = q.capacity_actions.empty() ? persisted : evaluate(true, true);
         q.drop = dropped.service - base.service;
         q.benefit = dropped.service - persisted.service;
         q.replacement = final.service - persisted.service;

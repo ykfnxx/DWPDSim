@@ -2,7 +2,7 @@
 
 **Status**: 🔄 In Progress
 **Started**: 2026-10-27
-**Last updated**: 2026-10-27 12:48 UTC
+**Last updated**: 2026-10-27 12:55 UTC
 **Current stage**: 5. Existing-dataset baseline comparisons and policy iteration
 
 ## TODO
@@ -96,3 +96,9 @@ Stage3 revised each-prototype first-demand quadrature and fixed prior-request re
 ### Stage3 selection and stage4 functional verification completed
 Exact-score tiebreak pilot: weight0 hit0.8115803683 versus baseline0.8145001876 on253 identical requests; allocated writes297,635,151,872B versus348,215,312,384B. Final current native:531 pytest passed,2 optional skips; Debug CTest7/7; Ruff and git diff check pass. Paired real MQSim smoke-v5 completed48 requests per policy, baseline223 and cost395 commands; byte/count/dependency reconciliation passed. Public tests cover shared-byte capacity and legal restoration, raw logical histories after loss, route prices, finite ledgers, pending publication, request-visible queues, migration recency and independent first-demand mass.
 Stage5: frozen-source one-hour empty-cache RR1TB baseline,weight0,weight1 comparisons running with candidates1/scenarios4. The default2/8 prototype pilot is separately labeled because its search configuration and overhead differ. Cost geometry now explicitly4224 pages/block,mapping0,matching reference Ideal_Mapping_Table mode. Added DESIGN.md and a non-overwriting paired experiment driver; neither generated datasets nor binaries are committed.
+
+### Additional API audit pending frozen runs
+Static audit found a valid short prompt (input_tokens below tokens_per_block, empty complete-hash path) reaches an unconditional terminal back() in cost begin_request. The prepared corpus has minimum2 blocks and no empty paths, so frozen comparisons do not exercise this branch. Added a public paired short-prompt test; apply the one-line nonempty terminal update and rebuild only after running experiments finish to preserve their source/native immutability. Do not run this test against the old native because back() on empty is undefined behavior.
+
+### Remove redundant quote work before complete one-hour comparisons
+Aborted4 incomplete cost/matrix processes before changing source; each output root has aborted.json and no complete result claim. Completed baseline3600 remains valid:3127 requests,hit0.9297783635,84.5258s. Optimization shares one dropped-state evaluation per victim group, reuses persisted value when there are no capacity actions, and avoids identical route quotes for already-backed groups. No change to demand law, action score or candidate order. The short-prompt terminal guard is applied in the same rebuild. Verify complete action/stat equivalence against frozen253-request weight0 and weight1 pilot outputs before new formal runs.
