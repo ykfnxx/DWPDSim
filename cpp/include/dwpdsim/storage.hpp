@@ -27,7 +27,7 @@ class StorageTierState {
 
     bool has_free_blocks(std::uint64_t blocks) const noexcept;
     std::uint64_t allocate() noexcept;
-    void record_unaddressed_write() noexcept;
+    void record_unaddressed_write(std::uint64_t blocks = 1) noexcept;
     void release(std::uint64_t block_address) noexcept;
 
     std::uint64_t capacity_blocks() const noexcept;

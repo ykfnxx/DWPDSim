@@ -29,8 +29,8 @@ std::uint64_t StorageTierState::allocate() noexcept {
     return address;
 }
 
-void StorageTierState::record_unaddressed_write() noexcept {
-    ++used_blocks_;
+void StorageTierState::record_unaddressed_write(std::uint64_t blocks) noexcept {
+    used_blocks_ += blocks;
     peak_used_blocks_ = std::max(peak_used_blocks_, used_blocks_);
 }
 

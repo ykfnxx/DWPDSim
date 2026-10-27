@@ -5,6 +5,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
+#include <limits>
 #include <memory>
 #include <string>
 #include <utility>
@@ -59,6 +60,10 @@ std::unique_ptr<StoragePolicy> make_storage_policy(
     const WearBalancedPolicyConfig& wear_balanced
 ) {
     if (kind == "infinite_storage") { return nullptr; }
+    if (simulation.hybrid_attention.enabled && kind != "wear_share_round_robin" &&
+        kind != "adaptive_endurance") {
+        throw py::value_error("finite hybrid storage supports wear_share_round_robin and adaptive_endurance");
+    }
     if (kind == "baseline_fixed_lru") {
         const StorageTier tier = parse_storage_tier(fixed_tier);
         if (fixed_stream_id >= simulation.slc.stream_count && tier == StorageTier::Slc) {
@@ -363,9 +368,87 @@ PYBIND11_MODULE(_core, module) {
         .def_readwrite("capacity_bytes", &StorageTierConfig::capacity_bytes)
         .def_readwrite("stream_count", &StorageTierConfig::stream_count);
 
+    py::class_<HybridAttentionConfig>(module, "HybridAttentionConfig")
+        .def(py::init<>())
+        .def_readwrite("enabled", &HybridAttentionConfig::enabled)
+        .def_readwrite("full_capacity_bytes", &HybridAttentionConfig::full_capacity_bytes)
+        .def_readwrite("linear_capacity_bytes", &HybridAttentionConfig::linear_capacity_bytes)
+        .def_readwrite("full_block_bytes", &HybridAttentionConfig::full_block_bytes)
+        .def_readwrite("linear_checkpoint_bytes", &HybridAttentionConfig::linear_checkpoint_bytes)
+        .def_readwrite("full_policy", &HybridAttentionConfig::full_policy)
+        .def_readwrite("linear_policy", &HybridAttentionConfig::linear_policy)
+        .def_readwrite("lru_k", &HybridAttentionConfig::lru_k)
+        .def_readwrite("alpha", &HybridAttentionConfig::alpha)
+        .def_readwrite("decay_seconds", &HybridAttentionConfig::decay_seconds)
+        .def_readwrite("linear_read_cost", &HybridAttentionConfig::linear_read_cost)
+        .def_readwrite("admit_storage_hits", &HybridAttentionConfig::admit_storage_hits)
+        .def_readwrite("dump_on_eviction", &HybridAttentionConfig::dump_on_eviction)
+        .def_readwrite("replay_mode", &HybridAttentionConfig::replay_mode)
+        .def_readwrite("tokens_per_block", &HybridAttentionConfig::tokens_per_block)
+        .def_readwrite("checkpoint_interval_tokens", &HybridAttentionConfig::checkpoint_interval_tokens)
+        .def_readwrite("checkpoint_generation", &HybridAttentionConfig::checkpoint_generation)
+        .def_readwrite("full_drop_fraction", &HybridAttentionConfig::full_drop_fraction)
+        .def_readwrite("linear_drop_fraction", &HybridAttentionConfig::linear_drop_fraction)
+        .def_readwrite("emit_io_trace", &HybridAttentionConfig::emit_io_trace)
+        .def_readwrite("recompute_weight", &HybridAttentionConfig::recompute_weight)
+        .def_readwrite("tail_prior", &HybridAttentionConfig::tail_prior)
+        .def_readwrite("drop_phase", &HybridAttentionConfig::drop_phase)
+        .def_readwrite("pool_allocation", &HybridAttentionConfig::pool_allocation)
+        .def_readwrite("pool_decay_seconds", &HybridAttentionConfig::pool_decay_seconds)
+        .def_readwrite("eviction_mode", &HybridAttentionConfig::eviction_mode)
+        .def_readwrite("full_retention_ns", &HybridAttentionConfig::full_retention_ns)
+        .def_readwrite("linear_retention_ns", &HybridAttentionConfig::linear_retention_ns)
+        .def_readwrite("linear_retention_policy", &HybridAttentionConfig::linear_retention_policy);
+
+    py::class_<HybridPrefillRequest>(module, "HybridPrefillRequest")
+        .def(py::init<>())
+        .def_readwrite("timestamp_ns", &HybridPrefillRequest::timestamp_ns)
+        .def_readwrite("sequence", &HybridPrefillRequest::sequence)
+        .def_readwrite("request_id", &HybridPrefillRequest::request_id)
+        .def_readwrite("hash_ids", &HybridPrefillRequest::hash_ids)
+        .def_readwrite("input_tokens", &HybridPrefillRequest::input_tokens)
+        .def_readwrite("max_prefix_tokens", &HybridPrefillRequest::max_prefix_tokens)
+        .def_readwrite("affinity_id", &HybridPrefillRequest::affinity_id);
+
+    py::class_<HybridPrefillResult>(module, "HybridPrefillResult")
+        .def_readonly("sequence", &HybridPrefillResult::sequence)
+        .def_readonly("request_id", &HybridPrefillResult::request_id)
+        .def_readonly("input_tokens", &HybridPrefillResult::input_tokens)
+        .def_readonly("matched_prefix_tokens", &HybridPrefillResult::matched_prefix_tokens)
+        .def_readonly("full_available_prefix_tokens", &HybridPrefillResult::full_available_prefix_tokens)
+        .def_readonly("restore_tokens", &HybridPrefillResult::restore_tokens)
+        .def_readonly("restore_hash_id", &HybridPrefillResult::restore_hash_id)
+        .def_readonly("full", &HybridPrefillResult::full)
+        .def_readonly("linear", &HybridPrefillResult::linear)
+        .def_readonly("prefill_compute_tokens", &HybridPrefillResult::prefill_compute_tokens)
+        .def_readonly("replayed_prefix_tokens", &HybridPrefillResult::replayed_prefix_tokens)
+        .def_readonly("new_suffix_tokens", &HybridPrefillResult::new_suffix_tokens)
+        .def_readonly("generated_checkpoint_tokens", &HybridPrefillResult::generated_checkpoint_tokens);
+
+    py::class_<HybridEvent>(module, "HybridEvent")
+        .def(py::init<>())
+        .def_readwrite("timestamp_ns", &HybridEvent::timestamp_ns)
+        .def_readwrite("sequence", &HybridEvent::sequence)
+        .def_readwrite("action", &HybridEvent::action)
+        .def_readwrite("hash_ids", &HybridEvent::hash_ids)
+        .def_readwrite("request_id", &HybridEvent::request_id)
+        .def_readwrite("components", &HybridEvent::components)
+        .def_readwrite("restore_blocks", &HybridEvent::restore_blocks)
+        .def_readwrite("size_bytes", &HybridEvent::size_bytes);
+
+    py::class_<HybridResult>(module, "HybridResult")
+        .def_readonly("sequence", &HybridResult::sequence)
+        .def_readonly("request_id", &HybridResult::request_id)
+        .def_readonly("restore_blocks", &HybridResult::restore_blocks)
+        .def_readonly("full", &HybridResult::full)
+        .def_readonly("linear", &HybridResult::linear)
+        .def_readonly("all_available", &HybridResult::all_available)
+        .def_readonly("all_dram", &HybridResult::all_dram);
+
     py::class_<SimulationConfig>(module, "SimulationConfig")
         .def(py::init<>())
         .def_readwrite("block_size_bytes", &SimulationConfig::block_size_bytes)
+        .def_readwrite("hybrid_attention", &SimulationConfig::hybrid_attention)
         .def_readwrite("memory", &SimulationConfig::memory)
         .def_readwrite("profile_memory", &SimulationConfig::profile_memory)
         .def_readwrite("slc", &SimulationConfig::slc)
@@ -423,7 +506,17 @@ PYBIND11_MODULE(_core, module) {
                          std::uint64_t min_reuse_blocks,
                          std::uint64_t reuse_ema_scale_blocks,
                          std::uint64_t shadow_slc_physical_blocks,
-                         std::uint64_t shadow_tlc_physical_blocks
+                         std::uint64_t shadow_tlc_physical_blocks,
+                         std::vector<double> memory_reuse_edges_s,
+                         std::vector<std::vector<double>> memory_reuse_survival,
+                         std::optional<double> memory_reuse_dump_probability,
+                         bool memory_reuse_priority,
+                         std::optional<double> memory_reuse_admit_probability,
+                         double memory_reuse_short_horizon_s,
+                         double memory_reuse_long_horizon_s,
+                         std::vector<std::vector<std::vector<double>>> memory_reuse_prefix_keep,
+                         bool memory_reuse_cost_weighted,
+                         double memory_reuse_recompute_weight
                      ) {
                 if (slc_host_share <= 0.0 || slc_host_share >= 1.0) {
                     throw py::value_error("slc_host_share must be between 0 and 1");
@@ -438,8 +531,8 @@ PYBIND11_MODULE(_core, module) {
                     (memory_retention_growth_seconds_per_block != 0 || memory_eviction_gap_reference_ns)) {
                     throw py::value_error("adaptive memory parameters require context_lru");
                 }
-                if (memory_max_eviction_blocks && memory_policy != "context_lru") {
-                    throw py::value_error("max_eviction_blocks requires context_lru");
+                if (memory_max_eviction_blocks && memory_policy != "context_lru" && memory_policy != "reuse_lru") {
+                    throw py::value_error("max_eviction_blocks requires context_lru or reuse_lru");
                 }
                 std::unique_ptr<MemoryPolicy> memory;
                 if (memory_policy == "baseline_lru") {
@@ -452,6 +545,18 @@ PYBIND11_MODULE(_core, module) {
                     memory = std::make_unique<IndexedMemoryLruPolicy>(
                         admit_storage_hits, memory_groups, memory_sampled_groups,
                         memory_workers, memory_seed, memory_retention_ns);
+                } else if (memory_policy == "reuse_lru") {
+                    if (memory_groups != 1 || memory_sampled_groups != 0 || memory_workers != 1 ||
+                        config.block_size_bytes == 0) {
+                        throw py::value_error("reuse_lru requires positive block size and single exact group");
+                    }
+                    memory = std::make_unique<ReuseMemoryLruPolicy>(admit_storage_hits,
+                        config.memory.capacity_bytes / config.block_size_bytes, memory_alpha,
+                        memory_retention_ns, memory_max_eviction_blocks, memory_reuse_edges_s,
+                        memory_reuse_survival, memory_reuse_dump_probability, memory_reuse_priority,
+                        memory_reuse_admit_probability, memory_reuse_short_horizon_s,
+                        memory_reuse_long_horizon_s, memory_reuse_prefix_keep,
+                        memory_reuse_cost_weighted, memory_reuse_recompute_weight);
                 } else if (memory_policy == "context_lru") {
                     if (memory_groups != 1 || memory_sampled_groups != 0 || memory_workers != 1) {
                         throw py::value_error("context_lru requires groups=1, sampled_groups=0, workers=1");
@@ -465,7 +570,7 @@ PYBIND11_MODULE(_core, module) {
                         memory_retention_growth_seconds_per_block, memory_eviction_gap_reference_ns,
                         memory_eviction_base_blocks);
                 } else {
-                    throw py::value_error("memory policy must be 'baseline_lru', 'indexed_lru' or 'context_lru'");
+                    throw py::value_error("memory policy must be 'baseline_lru', 'indexed_lru', 'context_lru' or 'reuse_lru'");
                 }
                 const WearShareRoundRobinPolicyConfig round_robin{
                     slc_host_share,
@@ -565,7 +670,17 @@ PYBIND11_MODULE(_core, module) {
             py::arg("min_reuse_blocks") = 4096ULL,
             py::arg("reuse_ema_scale_blocks") = 50000ULL,
             py::arg("shadow_slc_physical_blocks") = 0ULL,
-            py::arg("shadow_tlc_physical_blocks") = 0ULL
+            py::arg("shadow_tlc_physical_blocks") = 0ULL,
+            py::arg("memory_reuse_edges_s") = std::vector<double>{},
+            py::arg("memory_reuse_survival") = std::vector<std::vector<double>>{},
+            py::arg("memory_reuse_dump_probability") = py::none(),
+            py::arg("memory_reuse_priority") = false,
+            py::arg("memory_reuse_admit_probability") = py::none(),
+            py::arg("memory_reuse_short_horizon_s") = 60.0,
+            py::arg("memory_reuse_long_horizon_s") = 3600.0,
+            py::arg("memory_reuse_prefix_keep") = std::vector<std::vector<std::vector<double>>>{},
+            py::arg("memory_reuse_cost_weighted") = false,
+            py::arg("memory_reuse_recompute_weight") = 1.0
         )
         .def("storage_performance", [](const Simulator& simulator) {
             py::dict result;
@@ -583,6 +698,7 @@ PYBIND11_MODULE(_core, module) {
             return result;
         })
         .def("enable_memory_diagnostics", &Simulator::enable_memory_diagnostics)
+        .def("enable_request_diagnostics", &Simulator::enable_request_diagnostics)
         .def("memory_performance", [](const Simulator& simulator) {
             py::dict result;
             const auto work = simulator.memory_policy_work();
@@ -594,6 +710,8 @@ PYBIND11_MODULE(_core, module) {
             result["topology_member_moves"] = work.topology_member_moves;
             result["ancestor_updates"] = work.ancestor_updates;
             result["worker_rounds"] = work.worker_rounds;
+            result["evicted_idle_bins"] = work.evicted_idle_bins;
+            result["evicted_residency_bins"] = work.evicted_residency_bins;
             result["indexed_segments"] = work.indexed_segments;
             result["indexed_residents"] = work.indexed_residents;
             result["ancestor_entries"] = work.ancestor_entries;
@@ -677,6 +795,262 @@ PYBIND11_MODULE(_core, module) {
                 }
             }
         )
+        .def("process_hybrid_event", &Simulator::process_hybrid_event,
+            py::call_guard<py::gil_scoped_release>())
+        .def("process_hybrid_events", [](Simulator& simulator, const std::vector<HybridEvent>& events) {
+            simulator.hybrid_stats();
+            std::vector<HybridResult> results;
+            py::gil_scoped_release release;
+            for (const auto& event : events) {
+                auto result = simulator.process_hybrid_event(event);
+                if (result) { results.push_back(std::move(*result)); }
+            }
+            return results;
+        })
+        .def("process_hybrid_batch", [](Simulator& simulator, const py::buffer& timestamps,
+            const py::buffer& sequences, const py::buffer& actions, const py::buffer& components,
+            const py::buffer& request_ids, const py::buffer& restore_blocks, const py::buffer& sizes,
+            const py::buffer& offsets, const py::buffer& hashes) {
+            simulator.hybrid_stats();
+            // One validation/dispatch per columnar batch; no per-block Python callback.
+            const auto t = require_u64_buffer(timestamps, "timestamps");
+            const auto seq = require_u64_buffer(sequences, "sequences");
+            const auto act = require_u64_buffer(actions, "actions");
+            const auto comp = require_u64_buffer(components, "components");
+            const auto req = require_u64_buffer(request_ids, "request_ids");
+            const auto boundary = require_u64_buffer(restore_blocks, "restore_blocks");
+            const auto size = require_u64_buffer(sizes, "sizes");
+            const auto off = require_u64_buffer(offsets, "offsets");
+            const auto hash = require_u64_buffer(hashes, "hashes");
+            const auto n = t.shape[0];
+            for (const auto* column : {&seq, &act, &comp, &req, &boundary, &size}) {
+                if (column->shape[0] != n) { throw py::value_error("hybrid column lengths must match"); }
+            }
+            if (off.shape[0] != n + 1) { throw py::value_error("offsets length must be event_count + 1"); }
+            const auto* o = static_cast<const std::uint64_t*>(off.ptr);
+            const auto* a = static_cast<const std::uint64_t*>(act.ptr);
+            const auto* c = static_cast<const std::uint64_t*>(comp.ptr);
+            if (o[0] != 0 || o[n] != static_cast<std::uint64_t>(hash.shape[0])) {
+                throw py::value_error("offsets must span the hashes buffer");
+            }
+            for (py::ssize_t i = 0; i < n; ++i) {
+                if (o[i] >= o[i + 1] || a[i] > 2 || c[i] > 2) {
+                    throw py::value_error("invalid offsets or hybrid event code");
+                }
+            }
+            const auto* h = static_cast<const std::uint64_t*>(hash.ptr);
+            std::vector<HybridResult> results;
+            py::gil_scoped_release release;
+            for (py::ssize_t i = 0; i < n; ++i) {
+                HybridEvent e;
+                e.timestamp_ns = static_cast<const std::uint64_t*>(t.ptr)[i];
+                e.sequence = static_cast<const std::uint64_t*>(seq.ptr)[i];
+                e.action = a[i] == 0 ? "observe" : a[i] == 1 ? "publish" : "request";
+                e.components = c[i] == 0 ? "full" : c[i] == 1 ? "linear" : "both";
+                e.request_id = static_cast<const std::uint64_t*>(req.ptr)[i];
+                e.restore_blocks = static_cast<const std::uint64_t*>(boundary.ptr)[i];
+                e.size_bytes = static_cast<const std::uint64_t*>(size.ptr)[i];
+                e.hash_ids.assign(h + o[i], h + o[i + 1]);
+                auto result = simulator.process_hybrid_event(e);
+                if (result) { results.push_back(std::move(*result)); }
+            }
+            return results;
+        })
+        .def("process_hybrid_prefill", &Simulator::process_hybrid_prefill,
+            py::arg("request"), py::arg("collect_results") = true,
+            py::call_guard<py::gil_scoped_release>())
+        .def("run_hybrid_prefill_requests", [](Simulator& simulator,
+            const std::vector<HybridPrefillRequest>& requests) {
+            py::gil_scoped_release release;
+            for (const auto& request : requests) { simulator.process_hybrid_prefill(request, false); }
+        })
+        .def("process_hybrid_prefill_requests", [](Simulator& simulator,
+            const std::vector<HybridPrefillRequest>& requests) {
+            simulator.hybrid_stats();
+            std::vector<HybridPrefillResult> results;
+            py::gil_scoped_release release;
+            for (const auto& request : requests) { results.push_back(simulator.process_hybrid_prefill(request)); }
+            return results;
+        })
+        .def("process_hybrid_prefill_batch", [](Simulator& simulator, const py::buffer& timestamps,
+            const py::buffer& sequences, const py::buffer& request_ids, const py::buffer& input_tokens,
+            const py::buffer& max_prefix_tokens, const py::buffer& offsets, const py::buffer& hashes) {
+            simulator.hybrid_stats();
+            const auto t = require_u64_buffer(timestamps, "timestamps");
+            const auto seq = require_u64_buffer(sequences, "sequences");
+            const auto req = require_u64_buffer(request_ids, "request_ids");
+            const auto tokens = require_u64_buffer(input_tokens, "input_tokens");
+            const auto limits = require_u64_buffer(max_prefix_tokens, "max_prefix_tokens");
+            const auto off = require_u64_buffer(offsets, "offsets");
+            const auto hash = require_u64_buffer(hashes, "hashes");
+            const auto n = t.shape[0];
+            for (const auto* column : {&seq, &req, &tokens, &limits}) {
+                if (column->shape[0] != n) { throw py::value_error("prefill column lengths must match"); }
+            }
+            if (off.shape[0] != n + 1) { throw py::value_error("offsets length must be request_count + 1"); }
+            const auto* o = static_cast<const std::uint64_t*>(off.ptr);
+            if (o[0] != 0 || o[n] != static_cast<std::uint64_t>(hash.shape[0])) {
+                throw py::value_error("offsets must span the hashes buffer");
+            }
+            for (py::ssize_t i = 0; i < n; ++i) {
+                if (o[i] > o[i + 1]) { throw py::value_error("offsets must be nondecreasing"); }
+            }
+            const auto* h = static_cast<const std::uint64_t*>(hash.ptr);
+            std::vector<HybridPrefillResult> results;
+            py::gil_scoped_release release;
+            for (py::ssize_t i = 0; i < n; ++i) {
+                HybridPrefillRequest q;
+                q.timestamp_ns = static_cast<const std::uint64_t*>(t.ptr)[i];
+                q.sequence = static_cast<const std::uint64_t*>(seq.ptr)[i];
+                q.request_id = static_cast<const std::uint64_t*>(req.ptr)[i];
+                q.input_tokens = static_cast<const std::uint64_t*>(tokens.ptr)[i];
+                const auto limit = static_cast<const std::uint64_t*>(limits.ptr)[i];
+                if (limit != std::numeric_limits<std::uint64_t>::max()) { q.max_prefix_tokens = limit; }
+                if (o[i] != o[i + 1]) { q.hash_ids.assign(h + o[i], h + o[i + 1]); }
+                results.push_back(simulator.process_hybrid_prefill(q));
+            }
+            return results;
+        })
+        .def("hybrid_inspect", [](const Simulator& simulator, NodeId id, const std::string& kind) {
+            if (kind != "full" && kind != "linear") { throw py::value_error("component must be full or linear"); }
+            const auto* c = simulator.hybrid_component(id, kind == "full" ? 0 : 1);
+            py::dict result;
+            result["published"] = c && c->published;
+            result["in_dram"] = c && c->in_dram;
+            result["on_storage"] = c && c->on_storage();
+            result["storage_allocated_bytes"] = c ? c->storage_units * simulator.config().block_size_bytes : 0;
+            result["size_bytes"] = c ? c->size_bytes : 0;
+            result["demands"] = c ? c->demands : 0;
+            result["last_demand_ns"] = c ? c->last_demand_ns : 0;
+            result["storage_addresses"] = c ? c->storage_addresses : std::vector<std::uint64_t>{};
+            if (c && c->on_storage() && !simulator.config().infinite_storage) {
+                const auto& node = simulator.tree().node(id);
+                result["storage_tier"] = node.storage_tier == StorageTier::Slc ? "slc" : "tlc";
+                result["stream_id"] = node.storage_stream_id;
+            }
+            return result;
+        })
+        .def("hybrid_stats", [](const Simulator& simulator) {
+            const auto& state = simulator.hybrid_stats();
+            py::dict result;
+            const bool prefill = simulator.config().hybrid_attention.replay_mode == "prefix_replay";
+            result["schema_version"] = prefill ? 2 : 1;
+            result["io_events"] = state.io_sequence;
+            result["requests"] = state.requests;
+            if (prefill) {
+                const auto& c = state.prefill;
+                py::dict row;
+                row["restored_requests"] = c.restored_requests;
+                row["dram_restored_requests"] = c.dram_restored_requests;
+                row["input_tokens"] = c.input_tokens;
+                row["matched_prefix_tokens"] = c.matched_prefix_tokens;
+                row["restored_tokens"] = c.restored_tokens;
+                row["prefill_compute_tokens"] = c.prefill_compute_tokens;
+                row["replayed_prefix_tokens"] = c.replayed_prefix_tokens;
+                row["new_suffix_tokens"] = c.new_suffix_tokens;
+                row["generated_checkpoints"] = c.generated_checkpoints;
+                row["joint_token_hit_rate"] = rate(c.restored_tokens, c.input_tokens);
+                row["joint_restored_request_rate"] = rate(c.restored_requests, state.requests);
+                result["prefill"] = row;
+            } else {
+                result["all_available_requests"] = state.all_available_requests;
+                result["all_dram_requests"] = state.all_dram_requests;
+                result["joint_requests"] = state.joint_requests;
+                result["joint_available"] = state.joint_available;
+                result["joint_dram"] = state.joint_dram;
+            }
+            result["tree_nodes"] = simulator.tree().size();
+            if (!simulator.config().infinite_storage) {
+                py::dict storage;
+                storage["schema_version"] = 2;
+                storage["placement_unit"] = "prefix-node bundle; independent FULL/LINEAR payloads";
+                storage["background_ticks"] = simulator.metrics().background_ticks;
+                const auto policy = simulator.storage_policy_stats();
+                storage["gap_samples"] = policy.gap_samples;
+                storage["gap_q95_seconds"] = policy.gap_q95_seconds;
+                storage["idle_threshold_seconds"] = policy.idle_threshold_seconds;
+                for (std::size_t k = 0; k < 2; ++k) {
+                    const auto tier = k == 0 ? StorageTier::Slc : StorageTier::Tlc;
+                    const auto& c = state.storage_counters[k];
+                    const auto& pool = simulator.storage().tier(tier);
+                    py::dict row;
+                    row["capacity_bytes"] = pool.capacity_blocks() * simulator.config().block_size_bytes;
+                    row["used_bytes"] = pool.used_blocks() * simulator.config().block_size_bytes;
+                    row["peak_used_bytes"] = pool.peak_used_blocks() * simulator.config().block_size_bytes;
+                    row["reads"] = c.reads; row["writes"] = c.writes; row["trims"] = c.trims;
+                    row["read_bytes"] = c.read_bytes; row["write_bytes"] = c.write_bytes;
+                    row["trim_bytes"] = c.trim_bytes;
+                    row["capacity_trim_segments"] = c.capacity_trims;
+                    row["idle_trim_segments"] = c.idle_trims;
+                    row["migrated_objects"] = c.migrated_objects;
+                    storage[k == 0 ? "slc" : "tlc"] = row;
+                }
+                result["storage"] = storage;
+            }
+            const auto& cfg = simulator.config().hybrid_attention;
+            if (cfg.pool_allocation != "fixed") {
+                py::dict row;
+                row["allocation"] = cfg.pool_allocation;
+                row["capacity_bytes"] = simulator.config().memory.capacity_bytes;
+                row["resident_bytes"] = state.counters[0].resident_bytes + state.counters[1].resident_bytes;
+                row["peak_resident_bytes"] = state.peak_resident_bytes;
+                if (cfg.pool_allocation == "adaptive") {
+                    row["full_target_bytes"] = state.target_bytes[0];
+                    row["linear_target_bytes"] = state.target_bytes[1];
+                    row["updates"] = state.pool_updates;
+                    row["cross_pool_reclaims"] = state.cross_pool_reclaims;
+                } else { row["cross_component_reclaims"] = state.cross_pool_reclaims; }
+                result["pool"] = row;
+            }
+            for (std::size_t k = 0; k < 2; ++k) {
+                const auto& c = state.counters[k];
+                py::dict row;
+                row["demands"] = c.demands;
+                row["dram_hits"] = c.dram_hits;
+                row["storage_hits"] = c.storage_hits;
+                row["never_published_misses"] = c.never_published_misses;
+                row["lost_misses"] = c.lost_misses;
+                row["publications"] = c.publications;
+                row["published_bytes"] = c.published_bytes;
+                row["resident_bytes"] = c.resident_bytes;
+                row["peak_resident_bytes"] = c.peak_resident_bytes;
+                row["resident_objects"] = c.resident_objects;
+                row["storage_bytes"] = c.storage_bytes;
+                row["storage_allocated_bytes"] = c.storage_allocated_bytes;
+                row["read_objects"] = c.read_objects;
+                row["read_bytes"] = c.read_bytes;
+                row["read_allocated_bytes"] = c.read_allocated_bytes;
+                row["write_objects"] = c.write_objects;
+                row["write_bytes"] = c.write_bytes;
+                row["write_allocated_bytes"] = c.write_allocated_bytes;
+                row["evictions"] = c.evictions;
+                row["bypasses"] = c.bypasses;
+                if (!simulator.config().infinite_storage) {
+                    row["trim_objects"] = c.trim_objects;
+                    row["trim_bytes"] = c.trim_bytes;
+                    row["admission_rejections"] = c.admission_rejections;
+                }
+                row["candidates_examined"] = c.candidates_examined;
+                if (prefill || cfg.eviction_mode == "retention" || simulator.config().hybrid_attention.full_drop_fraction ||
+                    simulator.config().hybrid_attention.linear_drop_fraction) {
+                    row["eligible_evictions"] = c.eligible_evictions;
+                    row["drop_objects"] = c.drop_objects;
+                    row["dump_objects"] = c.dump_objects;
+                    row["backed_evictions"] = c.backed_evictions;
+                }
+                if (cfg.eviction_mode == "retention") {
+                    row["evicted_bytes"] = c.evicted_bytes;
+                    row["eligible_bytes"] = c.eligible_bytes;
+                    row["lost_bytes"] = c.lost_bytes;
+                    row["dump_bytes"] = c.dump_bytes;
+                    row["backed_bytes"] = c.backed_bytes;
+                    row["drop_action_objects"] = c.drop_action_objects;
+                    row["drop_action_bytes"] = c.drop_action_bytes;
+                }
+                result[k == 0 ? "full" : "linear"] = row;
+            }
+            return result;
+        })
         .def("stats", &simulator_stats)
         .def(
             "finish",

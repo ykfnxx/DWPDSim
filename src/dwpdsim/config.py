@@ -22,7 +22,7 @@ class StorageTierConfig:
 
 @dataclass(frozen=True, slots=True)
 class MemoryPolicyConfig:
-    """Memory LRU with scan, indexed, or context-aware segment selection."""
+    """Memory LRU and conditional-reuse segment selection."""
 
     kind: str = "baseline_lru"
     admit_storage_hits: bool = True
@@ -31,15 +31,27 @@ class MemoryPolicyConfig:
     workers: int = 1
     seed: int = 0
     profile: bool = False
-    # indexed_lru and context_lru: Drop if selected segment idle time is strictly greater.
+    # indexed_lru, context_lru and reuse_lru: Drop if selected segment idle time is strictly greater.
     retention_ns: int | None = None
-    # context_lru only: fraction of Memory capacity covered by oldest candidates.
+    # context_lru / reuse_lru: fraction of Memory capacity covered by oldest candidates.
     alpha: float = 0.01
-    # context_lru only: maximum resident blocks evicted from the selected segment tail.
+    # context_lru / reuse_lru: maximum resident blocks evicted from the selected segment tail.
     max_eviction_blocks: int | None = None
     retention_growth_seconds_per_block: float = 0.0
     eviction_gap_reference_ns: int | None = None
     eviction_base_blocks: int = 64
+    # reuse_lru: nine rows = previous gap (first/<=60s/>60s) x context (<=128/<=512/>512).
+    reuse_edges_s: list[float] = field(default_factory=list)
+    reuse_survival: list[list[float]] = field(default_factory=list)
+    reuse_dump_probability: float | None = None
+    reuse_priority: bool = False
+    reuse_admit_probability: float | None = None
+    reuse_short_horizon_s: float = 60.0
+    reuse_long_horizon_s: float = 3600.0
+    # Conditional prefix retention: [group][gap interval][relative depth third].
+    reuse_prefix_keep: list[list[list[float]]] = field(default_factory=list)
+    reuse_cost_weighted: bool = False
+    reuse_recompute_weight: float = 1.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -82,6 +94,41 @@ class StoragePolicyConfig:
 
 
 @dataclass(frozen=True, slots=True)
+class HybridAttentionConfig:
+    """Opt-in backend replay with chunked or request-end checkpoint generation."""
+
+    enabled: bool = False
+    full_capacity_bytes: int = 0
+    linear_capacity_bytes: int = 0
+    full_block_bytes: int = 0
+    linear_checkpoint_bytes: int = 0
+    full_policy: str = "segment_lru"
+    linear_policy: str = "checkpoint_lru"
+    lru_k: int = 2
+    alpha: float = 0.1
+    decay_seconds: float = 60.0
+    linear_read_cost: float = 1.0
+    admit_storage_hits: bool = True
+    dump_on_eviction: bool = True
+    replay_mode: str = "exact_objects"
+    tokens_per_block: int = 0
+    checkpoint_interval_tokens: int = 4096
+    full_drop_fraction: float | None = None
+    linear_drop_fraction: float | None = None
+    emit_io_trace: bool = True
+    recompute_weight: float = 1.0
+    tail_prior: float = 1.0
+    drop_phase: float = 0.0
+    pool_allocation: str = "shared"
+    pool_decay_seconds: float = 300.0
+    eviction_mode: str = "legacy"
+    full_retention_ns: int | None = None
+    linear_retention_ns: int | None = None
+    linear_retention_policy: str = "idle"
+    checkpoint_generation: str = "chunked_prefill"
+
+
+@dataclass(frozen=True, slots=True)
 class SimulationConfig:
     """Capacities, policies, and logical simulation end."""
 
@@ -93,3 +140,4 @@ class SimulationConfig:
     storage_policy: StoragePolicyConfig = field(default_factory=StoragePolicyConfig)
     simulation_end_ns: int | None = None
     progress_interval_requests: int = 0
+    hybrid_attention: HybridAttentionConfig = field(default_factory=HybridAttentionConfig)

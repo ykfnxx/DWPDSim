@@ -4,13 +4,18 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 from collections.abc import Iterator
+from dataclasses import asdict
 from pathlib import Path
 
 from dotenv import load_dotenv
 
 from dwpdsim import (
     DWPDSimulator,
+    HybridAttentionConfig,
+    HybridEvent,
+    HybridPrefillRequest,
     MemoryConfig,
     MemoryPolicyConfig,
     Request,
@@ -18,7 +23,8 @@ from dwpdsim import (
     StoragePolicyConfig,
     StorageTierConfig,
 )
-from dwpdsim.mqsim import convert_trace, run_mqsim
+from dwpdsim.hybrid_mqsim import convert_hybrid_trace, run_device, write_workload
+from dwpdsim.mqsim import _read_ssd_configuration, convert_trace, run_mqsim
 
 ROOT = Path(__file__).resolve().parents[1]
 ENV_PATH = ROOT / "example" / ".env"
@@ -71,6 +77,8 @@ def simulation_config() -> SimulationConfig:
     retention_ns = optional_int("DWPDSIM_MEMORY_RETENTION_NS")
     if retention_ns is not None and not 0 <= retention_ns <= 2**64 - 1:
         raise ValueError("DWPDSIM_MEMORY_RETENTION_NS must be a nonnegative uint64 or empty")
+    model_path = os.environ.get("DWPDSIM_MEMORY_REUSE_MODEL_PATH", "")
+    reuse_model = json.loads((ROOT / model_path).read_text()) if model_path else {}
     return SimulationConfig(
         block_size_bytes=int(required("DWPDSIM_BLOCK_SIZE_BYTES")),
         memory=MemoryConfig(capacity_bytes=int(required("DWPDSIM_MEMORY_CAPACITY_BYTES"))),
@@ -82,6 +90,39 @@ def simulation_config() -> SimulationConfig:
             capacity_bytes=int(required("DWPDSIM_TLC_CAPACITY_BYTES")),
             stream_count=int(required("DWPDSIM_TLC_STREAM_COUNT")),
         ),
+        hybrid_attention=HybridAttentionConfig(
+            enabled=boolean("DWPDSIM_HYBRID_ENABLED", "false"),
+            full_capacity_bytes=int(os.environ.get("DWPDSIM_HYBRID_FULL_CAPACITY_BYTES", "0")),
+            linear_capacity_bytes=int(os.environ.get("DWPDSIM_HYBRID_LINEAR_CAPACITY_BYTES", "0")),
+            full_block_bytes=int(os.environ.get("DWPDSIM_HYBRID_FULL_BLOCK_BYTES", "0")),
+            linear_checkpoint_bytes=int(os.environ.get("DWPDSIM_HYBRID_LINEAR_CHECKPOINT_BYTES", "0")),
+            full_policy=os.environ.get("DWPDSIM_HYBRID_FULL_POLICY", "segment_lru"),
+            linear_policy=os.environ.get("DWPDSIM_HYBRID_LINEAR_POLICY", "checkpoint_lru"),
+            lru_k=int(os.environ.get("DWPDSIM_HYBRID_LRU_K", "2")),
+            alpha=float(os.environ.get("DWPDSIM_HYBRID_ALPHA", "0.1")),
+            decay_seconds=float(os.environ.get("DWPDSIM_HYBRID_DECAY_SECONDS", "60")),
+            linear_read_cost=float(os.environ.get("DWPDSIM_HYBRID_LINEAR_READ_COST", "1")),
+            admit_storage_hits=boolean("DWPDSIM_HYBRID_ADMIT_STORAGE_HITS", "true"),
+            dump_on_eviction=boolean("DWPDSIM_HYBRID_DUMP_ON_EVICTION", "true"),
+            replay_mode=os.environ.get("DWPDSIM_HYBRID_REPLAY_MODE", "exact_objects"),
+            tokens_per_block=int(os.environ.get("DWPDSIM_HYBRID_TOKENS_PER_BLOCK", "0")),
+            checkpoint_interval_tokens=int(os.environ.get("DWPDSIM_HYBRID_CHECKPOINT_INTERVAL_TOKENS", "4096")),
+            checkpoint_generation=os.environ.get("DWPDSIM_HYBRID_CHECKPOINT_GENERATION", "chunked_prefill"),
+            full_drop_fraction=(float(os.environ["DWPDSIM_HYBRID_FULL_DROP_FRACTION"])
+                                if os.environ.get("DWPDSIM_HYBRID_FULL_DROP_FRACTION", "").strip() else None),
+            linear_drop_fraction=(float(os.environ["DWPDSIM_HYBRID_LINEAR_DROP_FRACTION"])
+                                  if os.environ.get("DWPDSIM_HYBRID_LINEAR_DROP_FRACTION", "").strip() else None),
+            emit_io_trace=boolean("DWPDSIM_HYBRID_EMIT_IO_TRACE", "true"),
+            recompute_weight=float(os.environ.get("DWPDSIM_HYBRID_RECOMPUTE_WEIGHT", "1")),
+            tail_prior=float(os.environ.get("DWPDSIM_HYBRID_TAIL_PRIOR", "1")),
+            drop_phase=float(os.environ.get("DWPDSIM_HYBRID_DROP_PHASE", "0")),
+            pool_allocation=os.environ.get("DWPDSIM_HYBRID_POOL_ALLOCATION", "shared"),
+            pool_decay_seconds=float(os.environ.get("DWPDSIM_HYBRID_POOL_DECAY_SECONDS", "300")),
+            eviction_mode=os.environ.get("DWPDSIM_HYBRID_EVICTION_MODE", "legacy"),
+            full_retention_ns=optional_int("DWPDSIM_HYBRID_FULL_RETENTION_NS"),
+            linear_retention_ns=optional_int("DWPDSIM_HYBRID_LINEAR_RETENTION_NS"),
+            linear_retention_policy=os.environ.get("DWPDSIM_HYBRID_LINEAR_RETENTION_POLICY", "idle"),
+        ),
         memory_policy=MemoryPolicyConfig(
             kind=required("DWPDSIM_MEMORY_POLICY"),
             admit_storage_hits=boolean("DWPDSIM_ADMIT_STORAGE_HITS"),
@@ -92,6 +133,16 @@ def simulation_config() -> SimulationConfig:
                 "DWPDSIM_MEMORY_RETENTION_GROWTH_SECONDS_PER_BLOCK", "0")),
             eviction_gap_reference_ns=optional_int("DWPDSIM_MEMORY_EVICTION_GAP_REFERENCE_NS"),
             eviction_base_blocks=int(os.environ.get("DWPDSIM_MEMORY_EVICTION_BASE_BLOCKS", "64")),
+            reuse_edges_s=reuse_model.get("reuse_edges_s", []),
+            reuse_survival=reuse_model.get("reuse_survival", []),
+            reuse_prefix_keep=reuse_model.get("reuse_prefix_keep", []),
+            reuse_cost_weighted=boolean("DWPDSIM_MEMORY_REUSE_COST_WEIGHTED", "false"),
+            reuse_recompute_weight=float(os.environ.get("DWPDSIM_MEMORY_REUSE_RECOMPUTE_WEIGHT", "1")),
+            reuse_dump_probability=optional_float("DWPDSIM_MEMORY_REUSE_DUMP_PROBABILITY"),
+            reuse_priority=boolean("DWPDSIM_MEMORY_REUSE_PRIORITY", "false"),
+            reuse_admit_probability=optional_float("DWPDSIM_MEMORY_REUSE_ADMIT_PROBABILITY"),
+            reuse_short_horizon_s=float(os.environ.get("DWPDSIM_MEMORY_REUSE_SHORT_HORIZON_S", "60")),
+            reuse_long_horizon_s=float(os.environ.get("DWPDSIM_MEMORY_REUSE_LONG_HORIZON_S", "3600")),
         ),
         storage_policy=StoragePolicyConfig(
             kind=required("DWPDSIM_STORAGE_POLICY"),
@@ -131,6 +182,20 @@ def simulation_config() -> SimulationConfig:
     )
 
 
+def read_hybrid_events(path: Path) -> Iterator[HybridEvent]:
+    with path.open(encoding="utf-8") as source:
+        for line in source:
+            if line.strip():
+                yield HybridEvent(**json.loads(line))
+
+
+def read_hybrid_prefill_requests(path: Path) -> Iterator[HybridPrefillRequest]:
+    with path.open(encoding="utf-8") as source:
+        for line in source:
+            if line.strip():
+                yield HybridPrefillRequest(**json.loads(line))
+
+
 def main() -> None:
     if not ENV_PATH.is_file():
         raise FileNotFoundError(
@@ -145,13 +210,37 @@ def main() -> None:
     mqsim_output_dir = output_dir / "mqsim"
 
     config = simulation_config()
+    if (config.hybrid_attention.enabled and config.storage_policy.kind != "infinite_storage"
+            and not config.hybrid_attention.emit_io_trace):
+        raise ValueError("finite hybrid MQSim replay requires DWPDSIM_HYBRID_EMIT_IO_TRACE=true")
     simulator = DWPDSimulator(config, trace_path)
     with simulator:
-        simulator.run(read_requests(configured_path("DWPDSIM_REQUESTS_PATH")))
+        if config.hybrid_attention.enabled:
+            path = configured_path("DWPDSIM_REQUESTS_PATH")
+            if config.hybrid_attention.replay_mode == "prefix_replay":
+                simulator.run_hybrid_prefill(read_hybrid_prefill_requests(path))
+            else:
+                simulator.run_hybrid(read_hybrid_events(path))
+        else:
+            simulator.run(read_requests(configured_path("DWPDSIM_REQUESTS_PATH")))
     simulator.write_stats(metrics_path)
 
     if config.storage_policy.kind == "infinite_storage":
         print(json.dumps({"metrics": str(metrics_path)}, indent=2))
+        return
+
+    if config.hybrid_attention.enabled:
+        if optional_int("DWPDSIM_EVENT_LIMIT") is not None:
+            raise ValueError("hybrid device replay requires the complete generated I/O trace")
+        ssd = configured_path("DWPDSIM_SSD_CONFIG")
+        _read_ssd_configuration(ssd, {pool: getattr(config, pool).capacity_bytes for pool in ("slc", "tlc")})
+        manifest = convert_hybrid_trace(Path(str(trace_path)+".hybrid.csv"), asdict(config), mqsim_output_dir)
+        shutil.copyfile(ssd, mqsim_output_dir / "ssd.xml")
+        write_workload(manifest, mqsim_output_dir / "workload.xml")
+        result = run_device(configured_path("DWPDSIM_MQSIM_BINARY"), mqsim_output_dir, manifest)
+        print(json.dumps(result, indent=2))
+        if result["status"] != "completed":
+            raise RuntimeError(f"MQSim replay ended with status={result['status']}")
         return
 
     manifest = convert_trace(

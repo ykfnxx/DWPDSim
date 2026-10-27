@@ -1,6 +1,7 @@
 """DWPDSim public Python API."""
 
 from dwpdsim.config import (
+    HybridAttentionConfig,
     MemoryConfig,
     MemoryPolicyConfig,
     SimulationConfig,
@@ -15,12 +16,17 @@ from dwpdsim.input import (
     parquet_batches,
     replay_batches,
 )
-from dwpdsim.models import Request
+from dwpdsim.model_profiles import KimiK3Profile, kimi_k3_profile
+from dwpdsim.models import HybridEvent, HybridPrefillRequest, Request
 from dwpdsim.simulator import DWPDSimulator
 
 __all__ = [
     "DWPDSimulator",
+    "HybridAttentionConfig",
+    "HybridEvent",
+    "HybridPrefillRequest",
     "InputConfig",
+    "KimiK3Profile",
     "MemoryConfig",
     "MemoryPolicyConfig",
     "Request",
@@ -30,6 +36,7 @@ __all__ = [
     "StorageTierConfig",
     "hub_batches",
     "huggingface_batches",
+    "kimi_k3_profile",
     "parquet_batches",
     "replay_batches",
 ]

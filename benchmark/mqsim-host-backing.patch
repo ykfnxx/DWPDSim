@@ -1,0 +1,52 @@
+--- a/src/ssd/Address_Mapping_Unit_Page_Level.cpp
++++ b/src/ssd/Address_Mapping_Unit_Page_Level.cpp
+@@ -1,3 +1,9 @@
++#include <sys/mman.h>
++#include <unistd.h>
++#include <fcntl.h>
++#include <cstdlib>
++#include <string>
++#include <vector>
+ #include <cmath>
+ #include <assert.h>
+ #include <stdexcept>
+@@ -198,11 +204,29 @@
+ 			Plane_ids[pid] = plane_ids[pid];
+ 		}
+ 
+-		GlobalMappingTable = new GMTEntryType[Total_logical_pages_no];
++		// Host-memory backing only: identical GMT entries, no simulated I/O or timing change.
++        const char* backing_directory = std::getenv("MQSIM_GMT_DIR");
++        if (!backing_directory) PRINT_ERROR("MQSIM_GMT_DIR is required by mapped-host build")
++        const std::string pattern = std::string(backing_directory) + "/gmt-XXXXXX";
++        std::vector<char> name(pattern.begin(), pattern.end()); name.push_back(0);
++        const int descriptor = mkstemp(name.data());
++        const std::size_t bytes = static_cast<std::size_t>(Total_logical_pages_no) * sizeof(GMTEntryType);
++        if (descriptor < 0 || ftruncate(descriptor, bytes) != 0) PRINT_ERROR("Cannot allocate host GMT backing file")
++        void* mapping = mmap(NULL, bytes, PROT_READ | PROT_WRITE, MAP_SHARED, descriptor, 0);
++        unlink(name.data()); close(descriptor);
++        if (mapping == MAP_FAILED) PRINT_ERROR("Cannot map host GMT backing file")
++        GlobalMappingTable = static_cast<GMTEntryType*>(mapping);
+ 		for (unsigned int i = 0; i < Total_logical_pages_no; i++) {
+ 			GlobalMappingTable[i].PPA = NO_PPA;
+ 			GlobalMappingTable[i].WrittenStateBitmap = UNWRITTEN_LOGICAL_PAGE;
+ 			GlobalMappingTable[i].TimeStamp = 0;
++            const unsigned int batch = 262144;
++            if ((i + 1) % batch == 0) {
++                void* first = GlobalMappingTable + i + 1 - batch;
++                const std::size_t length = batch * sizeof(GMTEntryType);
++                if (msync(first, length, MS_SYNC) != 0) PRINT_ERROR("Cannot initialize host GMT backing")
++                madvise(first, length, MADV_DONTNEED);
++            }
+ 		}
+ 
+ 		//If CMT is NULL, then each address mapping domain should create its own CMT
+@@ -228,7 +252,7 @@
+ 	AddressMappingDomain::~AddressMappingDomain()
+ 	{
+ 		if (Owns_CMT) delete CMT;
+-		delete[] GlobalMappingTable;
++		munmap(GlobalMappingTable, static_cast<std::size_t>(Total_logical_pages_no) * sizeof(GMTEntryType));
+ 		delete[] GlobalTranslationDirectory;
+ 
+ 		auto read_entry = Waiting_unmapped_read_transactions.begin();

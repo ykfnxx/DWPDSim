@@ -5,6 +5,16 @@ placement、淘汰与迁移。C++17 core 是逻辑状态、pool-local 地址、�
 的唯一所有者；policy 只读取视图并返回决策。vNext 是破坏性接口，设计契约见
 [`.design/vnext-policy-refactor.md`](.design/vnext-policy-refactor.md)。
 
+Kimi-K3 服务缓存实验使用 [Kimi-K3 配置与命中语义](docs/kimi-k3.md)：FULL/MLA block 与
+LINEAR/KDA checkpoint 独立管理，支持两类对象的 LRU-K 基线。真正命中取连续 FULL 前缀和
+对应 LINEAR checkpoint 的交集，主指标为 `prefill.joint_token_hit_rate`。无 trace 回放使用
+聚合入口并省去 SSD 地址列表；性能复现入口为 `benchmark/kimi_no_trace.py`。
+
+混合回放默认 `pool_allocation="shared"`：FULL 和 LINEAR 在 `memory.capacity_bytes` 总预算内
+按全局 LRU-K/LRU 次序竞争，不设置类型配额或需求软目标。WEKA runner 默认总 DRAM 为
+100 GB，两个组件配额为 0；历史 fixed/adaptive 分配需显式选择。共享 DRAM 基线及验证结果见
+[更正说明](report/shared-dram-correction.md)，完整 Gandalf 代价策略尚未实现。
+
 ## 行为语义
 
 每条请求携带全局纳秒时间、唯一 request id、用于 stream placement/session gap 的 affinity id，
@@ -617,3 +627,7 @@ uv run python benchmark/shadow_overhead.py --requests 20000 --output build/shado
 脚本使用128/256页的小池、每池2个stream、25%预留空间，分别运行原策略、Shadow固定超参数、
 Shadow在线调参。各策略产生的I/O可能不同，耗时不是等工作量加速比。小池多流的未满写入块
 会占用容量；预留空间不足时模型明确报错，不跳过事件或回退固定WA。
+
+### Kimi-K3 finite hybrid storage baseline
+
+Hybrid prefix replay supports finite SLC/TLC pools with `wear_share_round_robin` and `adaptive_endurance`. FULL/LINEAR copies retain independent payload and recovery state; the existing storage policies place and reclaim same-prefix SSD bundles. `benchmark/weka_kimi.py run --storage-policy ... --capacity-tb 1 --emit-io-trace` emits finite object trace v2; `benchmark/hybrid_device.py` converts and runs it with the configured six-channel device. See [hybrid usage](docs/hybrid-attention-usage.md) and [the baseline report](report/weka-storage-baseline.md) for configuration, request-window scope and device validation.

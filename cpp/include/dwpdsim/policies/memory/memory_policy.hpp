@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <optional>
+#include <vector>
 
 #include "dwpdsim/types.hpp"
 
@@ -36,6 +37,9 @@ struct MemoryPolicyWork {
     std::uint64_t indexed_segments = 0;
     std::uint64_t indexed_residents = 0;
     std::uint64_t ancestor_entries = 0;
+    // reuse_lru completed Memory spells, upper edges 1,4,16,60,300,1800,7200,inf seconds.
+    std::vector<std::uint64_t> evicted_idle_bins;
+    std::vector<std::uint64_t> evicted_residency_bins;
 };
 
 class MemoryPolicy {

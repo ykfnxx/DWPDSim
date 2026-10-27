@@ -10,6 +10,7 @@
 #include <vector>
 
 #include "dwpdsim/config.hpp"
+#include "dwpdsim/hybrid.hpp"
 #include "dwpdsim/metrics.hpp"
 #include "dwpdsim/policies/memory/memory_policy.hpp"
 #include "dwpdsim/policies/storage/storage_policy.hpp"
@@ -43,7 +44,14 @@ class Simulator {
         const std::vector<HashId>& hash_ids
     );
 
+    std::optional<HybridResult> process_hybrid_event(const HybridEvent& event);
+    HybridPrefillResult process_hybrid_prefill(const HybridPrefillRequest& request,
+        bool collect_results = true);
+    const HybridRuntime& hybrid_stats() const;
+    const HybridComponent* hybrid_component(NodeId id, std::size_t kind) const;
+
     void enable_memory_diagnostics(const std::string& path);
+    void enable_request_diagnostics(const std::string& path);
     void finish();
     void finish(TimestampNs simulation_end_ns);
 
@@ -66,6 +74,31 @@ class Simulator {
         Capacity,
         Background,
     };
+
+    void hybrid_require_enabled() const;
+    void hybrid_validate_order(TimestampNs now, std::uint64_t sequence) const;
+    void hybrid_create_path(const std::vector<HashId>& path, TimestampNs now);
+    void hybrid_admit(NodeId id, std::size_t kind, TimestampNs now);
+    void hybrid_update_pool_targets(std::uint64_t full_blocks, std::uint64_t tokens, TimestampNs now);
+    void hybrid_write(NodeId id, std::size_t kind, TimestampNs now);
+    std::uint64_t hybrid_io(NodeId id, std::size_t kind, const char* operation, TimestampNs now,
+        TraceReason reason = TraceReason::StorageHit,
+        std::optional<MoveId> move = std::nullopt,
+        std::optional<std::uint64_t> dependency = std::nullopt,
+        std::optional<StorageLocation> location = std::nullopt);
+    bool hybrid_ensure_capacity(StorageTier tier, std::uint64_t units,
+        const std::vector<NodeId>& protected_nodes, TimestampNs now);
+    bool hybrid_execute_trim(const TrimIntent& intent, ActionPlane plane, TimestampNs now);
+    bool hybrid_execute_relocation(const RelocateIntent& intent,
+        const std::vector<NodeId>& protected_nodes, TimestampNs now);
+    void hybrid_storage_accesses(const std::vector<std::pair<std::size_t, NodeId>>& reads,
+        TimestampNs now);
+    HybridComponent& hybrid_data(NodeId id, std::size_t kind);
+    void hybrid_publish(NodeId id, std::size_t kind, std::uint64_t size, TimestampNs now);
+    void hybrid_checkpoint_metadata(NodeId id, std::uint64_t tokens,
+        std::optional<NodeId> previous, TimestampNs now, bool frontier = true);
+    std::string hybrid_demand(NodeId id, std::size_t kind, TimestampNs now,
+        std::vector<std::pair<std::size_t, NodeId>>& reads);
 
     static SimulationConfig validate_config(SimulationConfig config);
 
@@ -125,12 +158,14 @@ class Simulator {
     std::uint64_t memory_capacity_blocks_;
     std::uint64_t memory_used_blocks_ = 0;
     RadixTree tree_;
+    std::unique_ptr<HybridRuntime> hybrid_;
     StorageState storage_;
     std::unique_ptr<MemoryPolicy> memory_policy_;
     std::unique_ptr<StoragePolicy> storage_policy_;
     MetricsCollector metrics_;
     TraceWriter trace_writer_;
     std::ofstream memory_diagnostics_;
+    std::ofstream request_diagnostics_;
     std::unique_ptr<ShadowFtl> shadow_;
     std::ofstream controller_windows_;
     TimestampNs feedback_period_ns_ = 0, next_feedback_ns_ = 0;

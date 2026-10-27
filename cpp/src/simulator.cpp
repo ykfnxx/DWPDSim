@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
@@ -88,7 +89,32 @@ Simulator::Simulator(
       memory_policy_(std::move(memory_policy)),
       storage_policy_(std::move(storage_policy)),
       metrics_(config_),
-      trace_writer_(trace_path, config_.block_size_bytes, !config_.infinite_storage) {
+      trace_writer_(trace_path, config_.block_size_bytes,
+          !config_.infinite_storage && !config_.hybrid_attention.enabled) {
+    if (config_.hybrid_attention.enabled) {
+        hybrid_ = std::make_unique<HybridRuntime>();
+        hybrid_->index.bind(tree_, config_.hybrid_attention);
+        const auto& h = config_.hybrid_attention;
+        if (h.pool_allocation == "adaptive") {
+            // Before the first demand, use one generation span's payload as a prior.
+            const auto span = h.checkpoint_generation == "request_end" ? h.tokens_per_block : h.checkpoint_interval_tokens;
+            const long double full = static_cast<long double>(span / h.tokens_per_block) *
+                h.full_block_bytes;
+            hybrid_->target_bytes[0] = std::clamp(static_cast<std::uint64_t>(
+                config_.memory.capacity_bytes * full / (full + h.linear_checkpoint_bytes)),
+                h.full_block_bytes, config_.memory.capacity_bytes - h.linear_checkpoint_bytes);
+            hybrid_->target_bytes[1] = config_.memory.capacity_bytes - hybrid_->target_bytes[0];
+        }
+        if (config_.hybrid_attention.emit_io_trace) {
+            hybrid_->io.exceptions(std::ios::failbit | std::ios::badbit);
+            hybrid_->io.open(trace_path.string() + ".hybrid.csv");
+            hybrid_->io << "sequence,timestamp_ns,component,hash_id,operation,payload_bytes,allocated_bytes,storage_addresses";
+            if (!config_.infinite_storage) {
+                hybrid_->io << ",storage_tier,stream_id,reason,move_id,depends_on_sequence";
+            }
+            hybrid_->io << '\n';
+        }
+    }
     memory_policy_->bind_tree(tree_);
     if (!config_.infinite_storage) {
         next_background_tick_ns_ = storage_policy_->background_schedule().period_ns;
@@ -111,6 +137,7 @@ void Simulator::process_request(
     const HashId* hash_ids,
     std::size_t hash_count
 ) {
+    if (hybrid_) { throw std::logic_error("use hybrid events when hybrid attention is enabled"); }
     if (finished_) {
         throw std::logic_error("cannot process requests after finish");
     }
@@ -145,6 +172,7 @@ void Simulator::process_request(
     std::uint64_t hit_blocks = 0;
     const auto ghost_prefix = shadow_ ? shadow_->ghost_prefix(hash_ids, hash_count, timestamp_ns) : 0;
     const std::uint64_t misses_before = metrics_.global_misses;
+    std::uint64_t raw_memory = 0, raw_storage = 0, raw_misses = 0;
     for (std::size_t position = 0; position < hash_count; ++position) {
         const auto [node_id, created] = parent_id.has_value()
                                             ? tree_.get_or_create(
@@ -171,6 +199,11 @@ void Simulator::process_request(
             node_id,
             parent_id,
         });
+        if (request_diagnostics_.is_open()) {
+            if (result == AccessResult::GlobalMiss) { ++raw_misses; }
+            else if (result == AccessResult::MemoryHit) { ++raw_memory; }
+            else { ++raw_storage; }
+        }
         prefix_hit = prefix_hit && result != AccessResult::GlobalMiss;
         metrics_.record_access(prefix_hit ? result : AccessResult::GlobalMiss);
         if (prefix_hit) { ++hit_blocks; }
@@ -180,6 +213,10 @@ void Simulator::process_request(
         shadow_->record_request(hit_blocks, ghost_prefix > hit_blocks ? ghost_prefix - hit_blocks : 0);
     }
     metrics_.compute_cost += (metrics_.global_misses - misses_before) * hash_count;
+    if (request_diagnostics_.is_open()) {
+        request_diagnostics_ << request_id << ',' << raw_memory << ',' << raw_storage << ','
+            << raw_misses << ',' << (metrics_.global_misses - misses_before) << '\n';
+    }
     {
         MemoryTimer timer(config_.profile_memory, memory_maintenance_ns);
         memory_policy_->on_request_end(request, tree_);
@@ -201,7 +238,18 @@ void Simulator::process_request(
     );
 }
 
+void Simulator::enable_request_diagnostics(const std::string& path) {
+    if (hybrid_) { throw std::logic_error("legacy diagnostics require hybrid attention disabled"); }
+    if (next_access_sequence_ != 0 || finished_) {
+        throw std::invalid_argument("request diagnostics must start before replay");
+    }
+    request_diagnostics_.exceptions(std::ios::failbit | std::ios::badbit);
+    request_diagnostics_.open(path);
+    request_diagnostics_ << "request_id,memory_hits,storage_hits,raw_misses,prefix_misses\n";
+}
+
 void Simulator::enable_memory_diagnostics(const std::string& path) {
+    if (hybrid_) { throw std::logic_error("legacy diagnostics require hybrid attention disabled"); }
     if (!config_.infinite_storage || next_access_sequence_ != 0 || finished_) {
         throw std::invalid_argument("memory diagnostics require infinite_storage before replay");
     }
@@ -226,12 +274,14 @@ void Simulator::finish(TimestampNs simulation_end_ns) {
     }
     run_until(simulation_end_ns);
     trace_writer_.finish();
+    if (hybrid_ && hybrid_->io.is_open()) { hybrid_->io.close(); }
     if (controller_windows_.is_open()) {
         controller_windows_.flush();
         if (!controller_windows_) { throw std::runtime_error("cannot flush controller windows"); }
         controller_windows_.close();
     }
     if (memory_diagnostics_.is_open()) { memory_diagnostics_.close(); }
+    if (request_diagnostics_.is_open()) { request_diagnostics_.close(); }
     finished_ = true;
 }
 
@@ -261,7 +311,7 @@ StoragePolicyStats Simulator::storage_policy_stats() const {
 }
 
 std::uint64_t Simulator::trace_event_count() const noexcept {
-    return trace_writer_.event_count();
+    return hybrid_ ? hybrid_->io_sequence : trace_writer_.event_count();
 }
 
 std::uint64_t Simulator::memory_capacity_blocks() const noexcept {
@@ -269,12 +319,127 @@ std::uint64_t Simulator::memory_capacity_blocks() const noexcept {
 }
 
 SimulationConfig Simulator::validate_config(SimulationConfig config) {
+    const auto& h = config.hybrid_attention;
+    if (!h.enabled) {
+        const HybridAttentionConfig d;
+        if (h.full_capacity_bytes != d.full_capacity_bytes || h.linear_capacity_bytes != d.linear_capacity_bytes ||
+            h.full_block_bytes != d.full_block_bytes || h.linear_checkpoint_bytes != d.linear_checkpoint_bytes ||
+            h.full_policy != d.full_policy || h.linear_policy != d.linear_policy || h.lru_k != d.lru_k || h.alpha != d.alpha ||
+            h.decay_seconds != d.decay_seconds ||
+            h.linear_read_cost != d.linear_read_cost || h.admit_storage_hits != d.admit_storage_hits ||
+            h.dump_on_eviction != d.dump_on_eviction || h.replay_mode != d.replay_mode ||
+            h.tokens_per_block != d.tokens_per_block ||
+            h.checkpoint_interval_tokens != d.checkpoint_interval_tokens ||
+            h.checkpoint_generation != d.checkpoint_generation ||
+            h.full_drop_fraction != d.full_drop_fraction || h.linear_drop_fraction != d.linear_drop_fraction ||
+            h.emit_io_trace != d.emit_io_trace || h.recompute_weight != d.recompute_weight || h.tail_prior != d.tail_prior ||
+            h.drop_phase != d.drop_phase || h.pool_allocation != d.pool_allocation ||
+            h.pool_decay_seconds != d.pool_decay_seconds || h.eviction_mode != d.eviction_mode ||
+            h.full_retention_ns != d.full_retention_ns || h.linear_retention_ns != d.linear_retention_ns ||
+            h.linear_retention_policy != d.linear_retention_policy) {
+            throw std::invalid_argument("hybrid parameters require hybrid_attention.enabled=true");
+        }
+    } else {
+        if (h.replay_mode != "exact_objects" && h.replay_mode != "prefix_replay") {
+            throw std::invalid_argument("unsupported hybrid replay_mode");
+        }
+        if (h.replay_mode == "prefix_replay") {
+            if (h.checkpoint_generation != "chunked_prefill" && h.checkpoint_generation != "request_end") {
+                throw std::invalid_argument("unsupported hybrid checkpoint_generation");
+            }
+            if (!h.tokens_per_block || !h.checkpoint_interval_tokens ||
+                h.checkpoint_interval_tokens % h.tokens_per_block != 0) {
+                throw std::invalid_argument("prefix replay requires positive tokens_per_block and a positive "
+                    "checkpoint_interval_tokens divisible by tokens_per_block");
+            }
+        } else if (h.tokens_per_block || h.checkpoint_interval_tokens != 4096 ||
+            h.checkpoint_generation != "chunked_prefill") {
+            throw std::invalid_argument("checkpoint generation parameters require replay_mode=prefix_replay");
+        }
+        if (!h.lru_k) { throw std::invalid_argument("lru_k must be positive"); }
+        if (h.pool_allocation != "shared" && h.pool_allocation != "fixed" && h.pool_allocation != "adaptive") {
+            throw std::invalid_argument("unsupported hybrid pool_allocation");
+        }
+        const bool adaptive = h.pool_allocation == "adaptive";
+        const bool shared = h.pool_allocation == "shared";
+        if (shared && (h.full_capacity_bytes || h.linear_capacity_bytes)) {
+            throw std::invalid_argument("shared allocation uses memory.capacity_bytes; component capacity limits must be zero");
+        }
+        if (shared && !((h.full_policy == "lru_k" && h.linear_policy == "lru_k") ||
+            ((h.full_policy == "segment_lru" || h.full_policy == "indexed_segment_lru") &&
+                h.linear_policy == "checkpoint_lru"))) {
+            throw std::invalid_argument("shared allocation requires both lru_k or segment/checkpoint LRU policies");
+        }
+        if (!std::isfinite(h.pool_decay_seconds) || h.pool_decay_seconds <= 0 ||
+            (!adaptive && h.pool_decay_seconds != 300)) {
+            throw std::invalid_argument("pool_decay_seconds requires adaptive allocation and must be positive");
+        }
+        if (adaptive && (h.full_capacity_bytes || h.linear_capacity_bytes || h.replay_mode != "prefix_replay" ||
+            h.full_drop_fraction || h.linear_drop_fraction)) {
+            throw std::invalid_argument("adaptive allocation requires prefix_replay, no fixed pool caps or drop quotas");
+        }
+        if (!h.full_block_bytes || !h.linear_checkpoint_bytes ||
+            (!shared && (adaptive ? (h.full_block_bytes > config.memory.capacity_bytes ||
+                h.linear_checkpoint_bytes > config.memory.capacity_bytes - h.full_block_bytes) :
+                (!h.full_capacity_bytes || !h.linear_capacity_bytes ||
+                 h.full_capacity_bytes > config.memory.capacity_bytes ||
+                 h.linear_capacity_bytes > config.memory.capacity_bytes - h.full_capacity_bytes)))) {
+            throw std::invalid_argument("hybrid pools require positive sizes and must fit the total memory budget");
+        }
+        if (h.eviction_mode != "legacy" && h.eviction_mode != "retention") {
+            throw std::invalid_argument("unsupported hybrid eviction_mode");
+        }
+        if (h.linear_retention_policy != "idle" && h.linear_retention_policy != "frontier") {
+            throw std::invalid_argument("unsupported hybrid linear_retention_policy");
+        }
+        if (h.eviction_mode == "legacy" && (h.full_retention_ns || h.linear_retention_ns ||
+            h.linear_retention_policy != "idle")) {
+            throw std::invalid_argument("hybrid retention parameters require eviction_mode=retention");
+        }
+        if (h.eviction_mode == "retention" && (h.full_drop_fraction || h.linear_drop_fraction ||
+            h.drop_phase != 0 || !h.dump_on_eviction || h.linear_policy == "frontier_guard")) {
+            throw std::invalid_argument("retention actions cannot use quotas, drop_phase, dump_on_eviction=false or frontier_guard");
+        }
+        if ((h.full_policy != "segment_lru" && h.full_policy != "indexed_segment_lru" && h.full_policy != "lru_k") ||
+            (h.linear_policy != "lru_k" && h.linear_policy != "checkpoint_lru" && h.linear_policy != "frequency" && h.linear_policy != "benefit" &&
+             h.linear_policy != "prefix_frequency" && h.linear_policy != "replay_value" && h.linear_policy != "copy_aware" &&
+             h.linear_policy != "target_frequency" && h.linear_policy != "target_value" && h.linear_policy != "frontier_lru" &&
+             h.linear_policy != "frontier_guard")) {
+            throw std::invalid_argument("unsupported hybrid policy");
+        }
+        if ((h.linear_policy == "prefix_frequency" || h.linear_policy == "replay_value" || h.linear_policy == "copy_aware" ||
+             h.linear_policy == "target_frequency" || h.linear_policy == "target_value" || h.linear_policy == "frontier_lru" ||
+             h.linear_policy == "frontier_guard") &&
+            h.replay_mode != "prefix_replay") {
+            throw std::invalid_argument("prefix scoring policies require prefix_replay");
+        }
+        for (const auto quota : {h.full_drop_fraction, h.linear_drop_fraction}) {
+            if (quota && (!std::isfinite(*quota) || *quota < 0 || *quota > 1)) {
+                throw std::invalid_argument("hybrid drop fractions must be finite values in [0,1]");
+            }
+        }
+        if (!std::isfinite(h.alpha) || h.alpha <= 0 || h.alpha > 1 ||
+            !std::isfinite(h.decay_seconds) || h.decay_seconds <= 0 ||
+            !std::isfinite(h.linear_read_cost) || h.linear_read_cost <= 0) {
+            throw std::invalid_argument("invalid hybrid alpha, decay or read cost");
+        }
+        if (!std::isfinite(h.recompute_weight) || h.recompute_weight < 0) {
+            throw std::invalid_argument("recompute_weight must be finite and nonnegative");
+        }
+        if (!std::isfinite(h.tail_prior) || h.tail_prior < 0) {
+            throw std::invalid_argument("tail_prior must be finite and nonnegative");
+        }
+        if (!std::isfinite(h.drop_phase) || h.drop_phase < 0 || h.drop_phase >= 1 ||
+            (h.drop_phase != 0 && !h.full_drop_fraction && !h.linear_drop_fraction)) {
+            throw std::invalid_argument("drop_phase must be in [0,1), and requires a quota when nonzero");
+        }
+    }
     if (config.block_size_bytes == 0) {
         throw std::invalid_argument("block_size_bytes must be positive");
     }
     if (
         config.memory.capacity_bytes < config.block_size_bytes ||
-        config.memory.capacity_bytes % config.block_size_bytes != 0
+        (!h.enabled && config.memory.capacity_bytes % config.block_size_bytes != 0)
     ) {
         throw std::invalid_argument("memory capacity must contain whole blocks");
     }
@@ -766,6 +931,13 @@ bool Simulator::execute_action(
     const std::vector<NodeId>& protected_nodes,
     const TraceContext& trace_context_value
 ) {
+    if (hybrid_) {
+        if (const auto* trim = std::get_if<TrimIntent>(&action)) {
+            return hybrid_execute_trim(*trim, plane, trace_context_value.timestamp_ns);
+        }
+        return hybrid_execute_relocation(std::get<RelocateIntent>(action),
+            protected_nodes, trace_context_value.timestamp_ns);
+    }
     if (std::holds_alternative<TrimIntent>(action)) {
         return execute_trim(
             std::get<TrimIntent>(action),
