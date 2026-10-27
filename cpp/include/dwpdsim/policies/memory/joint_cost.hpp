@@ -84,7 +84,8 @@ class JointMemoryCostPolicy {
     std::vector<HybridCopyChange> changes(const HybridCostQuote& quote,
         bool writes, bool capacity) const;
     double value(const std::vector<Scenario>& scenarios,
-        const std::vector<HybridCopyChange>& changes, const StoragePolicy& storage_policy,
+        const HybridRecoveryState& base, const std::vector<HybridCopyChange>& changes,
+        const StoragePolicy& storage_policy,
         const StorageView& storage, TimestampNs now);
     void media_quote(HybridCostQuote& quote, TimestampNs now, const StorageView& storage);
     AgeReuseFeature feature(NodeId id, std::size_t kind, TimestampNs now) const;

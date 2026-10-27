@@ -32,11 +32,15 @@ class HybridRecoveryState {
   public:
     explicit HybridRecoveryState(const RadixTree& tree,
         const std::vector<HybridCopyChange>& changes = {});
+    HybridRecoveryState(const HybridRecoveryState& parent,
+        const std::vector<HybridCopyChange>& changes);
     HybridCopyView component(NodeId id, std::size_t kind) const;
 
   private:
     const RadixTree& tree_;
+    const HybridRecoveryState* parent_ = nullptr;
     std::unordered_map<NodeId, std::array<std::optional<HybridCopyChange>, 2>> changes_;
+    std::optional<HybridCopyChange> delta(NodeId id, std::size_t kind) const;
 };
 
 struct HybridRecoveryValue {

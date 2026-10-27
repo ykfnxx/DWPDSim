@@ -358,10 +358,11 @@ std::vector<JointMemoryCostPolicy::Scenario> JointMemoryCostPolicy::scenarios(
 }
 
 double JointMemoryCostPolicy::value(const std::vector<Scenario>& scenes,
-    const std::vector<HybridCopyChange>& changes, const StoragePolicy& policy,
+    const HybridRecoveryState& base, const std::vector<HybridCopyChange>& changes,
+    const StoragePolicy& policy,
     const StorageView& storage, TimestampNs now) {
     double result = 0;
-    const HybridRecoveryState projected(tree_, changes);
+    const HybridRecoveryState projected(base, changes);
     const auto stats = policy.stats(storage);
     const auto background = policy.background_schedule().period_ns / 1e9;
     for (const auto& scene : scenes) {
@@ -369,7 +370,7 @@ double JointMemoryCostPolicy::value(const std::vector<Scenario>& scenes,
             if (scene.mass[h] == 0) { continue; }
             const auto time = scene.time_seconds[h];
             for (unsigned sample = 0; sample < 3; ++sample) {
-                auto at_time = changes;
+                std::vector<HybridCopyChange> at_time;
                 for (const auto id : scene.request.hash_ids) {
                     for (std::size_t kind = 0; kind < 2; ++kind) {
                         const auto copy = projected.component(id, kind);
@@ -394,7 +395,7 @@ double JointMemoryCostPolicy::value(const std::vector<Scenario>& scenes,
                     }
                 }
                 result += scene.mass[h] * recovery_.evaluate(scene.request,
-                    HybridRecoveryState(tree_, at_time)).total_seconds / 3;
+                    HybridRecoveryState(projected, at_time)).total_seconds / 3;
                 ++counters_.scenario_evaluations;
             }
         }
@@ -525,15 +526,13 @@ HybridCostQuote JointMemoryCostPolicy::select(
             }
         }
     }
-    const auto base = value(scenes, admission, policy, storage, now);
+    const HybridRecoveryState admitted(tree_, admission);
+    const auto base = value(scenes, admitted, {}, policy, storage, now);
     std::optional<std::size_t> best;
     for (std::size_t i = 0; i < quotes.size(); ++i) {
         auto& q = quotes[i];
         const auto evaluate = [&](bool writes, bool capacity) {
-            auto delta = admission;
-            const auto extra = changes(q, writes, capacity);
-            delta.insert(delta.end(), extra.begin(), extra.end());
-            return value(scenes, delta, policy, storage, now);
+            return value(scenes, admitted, changes(q, writes, capacity), policy, storage, now);
         };
         const auto dropped = evaluate(false, false), persisted = evaluate(true, false);
         q.drop = dropped - base;
