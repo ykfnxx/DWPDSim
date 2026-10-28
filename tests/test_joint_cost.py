@@ -70,8 +70,9 @@ def run(cfg, path, count=30):
         return sim.hybrid_stats()
 
 
-def test_joint_cost_and_dump_all_share_input_and_recovery_contract(tmp_path):
-    cfg = configuration()
+@pytest.mark.parametrize("survival", ["pressure", "continuation"])
+def test_joint_cost_and_dump_all_share_input_and_recovery_contract(tmp_path, survival):
+    cfg = configuration(storage_survival=survival)
     cost = run(cfg, tmp_path / "cost")
     baseline = run(replace(cfg, hybrid_attention=replace(
         cfg.hybrid_attention, eviction_mode="legacy", cost=JointCostConfig(),
@@ -112,9 +113,10 @@ def test_media_prices_change_selected_route(tmp_path, prices, preferred):
     assert writes[1-preferred] == 0
 
 
-def test_cost_trace_keeps_storage_bytes_and_dependencies_consistent(tmp_path):
+@pytest.mark.parametrize("survival", ["pressure", "continuation"])
+def test_cost_trace_keeps_storage_bytes_and_dependencies_consistent(tmp_path, survival):
     path = tmp_path / "trace"
-    stats = run(configuration(nand_seconds_per_gib=(0, 0)), path, count=54)
+    stats = run(configuration(nand_seconds_per_gib=(0, 0), storage_survival=survival), path, count=54)
     live = {}
     rows = list(csv.DictReader(path.with_name(path.name + ".hybrid.csv").open()))
     for sequence, row in enumerate(rows):
@@ -198,8 +200,10 @@ def test_existing_write_backlog_adds_queue_wait(tmp_path):
         assert sim.hybrid_stats()["cost"]["queue_cost"] > 0
 
 
-def test_background_migration_preserves_model_storage_recency(tmp_path):
-    cfg = configuration(nand_seconds_per_gib=(0, 1e12), prefill_tokens_per_second=0.01)
+@pytest.mark.parametrize("survival", ["pressure", "continuation"])
+def test_background_migration_preserves_model_storage_recency(tmp_path, survival):
+    cfg = configuration(nand_seconds_per_gib=(0, 1e12), prefill_tokens_per_second=0.01,
+                        storage_survival=survival)
     cfg = replace(cfg, storage_policy=StoragePolicyConfig(
         kind="adaptive_endurance", logical_fill_fraction=1, slc_host_share=1/3,
         promotion_seconds=1, idle_multiplier=0.001, background_period_ns=10**9,
@@ -243,9 +247,23 @@ def test_short_prompt_without_complete_hash_blocks_matches_baseline(tmp_path):
     assert observations[0]["cost"]["logical_full_demands"] == 2
 
 
-def test_reuse_training_is_independent_of_drop_dump_actions(tmp_path):
-    saved = run(configuration(wear_weight=0), tmp_path / "save", count=54)
-    dropped = run(configuration(wear_weight=1e16), tmp_path / "drop", count=54)
+@pytest.mark.parametrize("survival", ["pressure", "continuation"])
+def test_reuse_training_is_independent_of_drop_dump_actions(tmp_path, survival):
+    saved = run(configuration(wear_weight=0, storage_survival=survival), tmp_path / "save", count=54)
+    dropped = run(configuration(wear_weight=1e16, storage_survival=survival), tmp_path / "drop", count=54)
     assert saved["full"]["drop_objects"] != dropped["full"]["drop_objects"]
     for field in ("logical_full_demands", "logical_linear_demands", "reuse"):
         assert saved["cost"][field] == dropped["cost"][field]
+
+
+def test_compute_priority_preserves_recovery_under_expensive_transfers(tmp_path):
+    cfg = configuration(wear_weight=0, prefill_tokens_per_second=100,
+                        storage_read_bytes_per_second=(10, 10), gpu_bytes_per_second=50)
+    latency = run(cfg, tmp_path / "latency", count=54)
+    priority = run(replace(cfg, hybrid_attention=replace(
+        cfg.hybrid_attention, recompute_weight=1000,
+    )), tmp_path / "priority", count=54)
+    assert priority["prefill"]["restored_tokens"] > latency["prefill"]["restored_tokens"]
+    assert priority["prefill"]["prefill_compute_tokens"] < latency["prefill"]["prefill_compute_tokens"]
+    for field in ("logical_full_demands", "logical_linear_demands", "reuse"):
+        assert priority["cost"][field] == latency["cost"][field]

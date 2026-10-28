@@ -114,6 +114,7 @@ class JointCostConfig:
     nand_pages_per_block: int = 256
     mapping_pages_per_block: float = 1
     overprovisioning: float = 0.125
+    storage_survival: str = "pressure"
 
 
 @dataclass(frozen=True, slots=True)

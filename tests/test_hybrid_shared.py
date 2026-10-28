@@ -138,7 +138,7 @@ def test_global_lru_k_matches_independent_variable_byte_reference(tmp_path, k, d
         assert stats["pool"]["cross_component_reclaims"] > 0
 
 
-@pytest.mark.parametrize("full_policy", ["segment_lru", "indexed_segment_lru"])
+@pytest.mark.parametrize("full_policy", ["segment_lru", "indexed_segment_lru", "context_lru"])
 def test_global_lru_can_reclaim_the_other_component(tmp_path, full_policy):
     cfg = configuration(full_policy=full_policy, linear_policy="checkpoint_lru")
     rows = [("publish", "linear", 1), ("publish", "full", 2),
@@ -154,9 +154,47 @@ def test_global_lru_can_reclaim_the_other_component(tmp_path, full_policy):
         assert sim.hybrid_stats()["pool"]["cross_component_reclaims"] == 1
 
 
+@pytest.mark.parametrize("selector,alpha,evicted", [
+    ("indexed_segment_lru", 1, [1, 2, 3]),
+    ("context_lru", 0.01, [1, 2, 3]),
+    ("context_lru", 1, [10]),
+])
+def test_context_prefers_shallow_segment_within_cold_byte_budget(tmp_path, selector, alpha, evicted):
+    cfg = configuration(total=32, full_policy=selector, linear_policy="checkpoint_lru", alpha=alpha)
+    with DWPDSimulator(cfg, tmp_path / selector) as sim:
+        for i, path in enumerate(([1], [1, 2], [1, 2, 3], [10], [20])):
+            sim.process_hybrid(HybridEvent(i, i, "publish", path, components="full"))
+        for node in [1, 2, 3, 10, 20]:
+            state = sim.hybrid_inspect(node, "full")
+            assert state["in_dram"] == (node not in evicted)
+            assert state["on_storage"] == (node in evicted)
+        assert sim.hybrid_stats()["pool"]["peak_resident_bytes"] <= 32
+
+
+@pytest.mark.parametrize("selector", ["indexed_segment_lru", "context_lru"])
+@pytest.mark.parametrize("component", ["full", "linear"])
+def test_shared_retention_300_seconds_is_strict_for_each_component(tmp_path, selector, component):
+    size = 8 if component == "full" else 24
+    cfg = configuration(
+        total=size, full_policy=selector, linear_policy="checkpoint_lru", eviction_mode="retention",
+        full_retention_ns=300 * 10**9, linear_retention_ns=300 * 10**9,
+    )
+    offsets = [0, 300 * 10**9, 600 * 10**9 + 1, 600 * 10**9 + 1]
+    with DWPDSimulator(cfg, tmp_path / component) as sim:
+        for i, now in enumerate(offsets):
+            sim.process_hybrid(HybridEvent(now, i, "publish", [i + 1], components=component))
+        counts = sim.hybrid_stats()[component]
+        assert (counts["evictions"], counts["drop_objects"], counts["dump_objects"]) == (3, 1, 2)
+        assert sim.hybrid_inspect(1, component)["on_storage"]
+        assert not sim.hybrid_inspect(2, component)["on_storage"]
+        assert sim.hybrid_inspect(3, component)["on_storage"]
+
+
 @pytest.mark.parametrize("first,missing", [("full", "full"), ("linear", "linear")])
-def test_shared_last_copy_eviction_cannot_create_joint_hit(tmp_path, first, missing):
-    cfg = configuration(total=32, dump_on_eviction=False)
+@pytest.mark.parametrize("selector", ["lru_k", "context_lru"])
+def test_shared_last_copy_eviction_cannot_create_joint_hit(tmp_path, first, missing, selector):
+    cfg = configuration(total=32, dump_on_eviction=False, full_policy=selector,
+                        linear_policy="lru_k" if selector == "lru_k" else "checkpoint_lru")
     second = "linear" if first == "full" else "full"
     with DWPDSimulator(cfg, tmp_path / first) as sim:
         for i, component in enumerate((first, second)):

@@ -49,7 +49,8 @@ JointMemoryCostPolicy::JointMemoryCostPolicy(const SimulationConfig& config, con
         !std::isfinite(c.mapping_pages_per_block) || c.mapping_pages_per_block < 0 ||
         config.block_size_bytes % c.nand_page_bytes ||
         !std::isfinite(c.overprovisioning) || c.overprovisioning <= 0 || c.overprovisioning >= 1 ||
-        !std::isfinite(c.wear_weight) || c.wear_weight < 0) {
+        !std::isfinite(c.wear_weight) || c.wear_weight < 0 ||
+        (c.storage_survival != "pressure" && c.storage_survival != "continuation")) {
         throw std::invalid_argument("invalid joint cost search, sampling, NAND geometry or wear parameters");
     }
     for (std::size_t k = 0; k < 2; ++k) {
@@ -324,6 +325,15 @@ std::vector<JointMemoryCostPolicy::Scenario> JointMemoryCostPolicy::scenarios(
             scene.request.hash_ids.push_back(*at);
         }
         std::reverse(scene.request.hash_ids.begin(), scene.request.hash_ids.end());
+        if (config_.hybrid_attention.cost.storage_survival == "pressure") {
+            scene.storage_cohorts.resize(scene.request.hash_ids.size());
+            auto cohort = tree_.segment_leaf_for(endpoint);
+            for (std::size_t i = scene.request.hash_ids.size(); i-- > 0;) {
+                const auto id = scene.request.hash_ids[i];
+                if (tree_.child_count(id) != 1) { cohort = id; }
+                scene.storage_cohorts[i] = cohort;
+            }
+        }
         // A hypothetical next prompt continues one uncached token beyond an
         // observed endpoint. It publishes no synthetic cache/decode identity.
         scene.request.input_tokens = scene.request.hash_ids.size() * config_.hybrid_attention.tokens_per_block + 1;
@@ -438,6 +448,7 @@ JointMemoryCostPolicy::Value JointMemoryCostPolicy::value(const std::vector<Scen
     const auto stats = policy.stats(storage);
     const auto background = policy.background_schedule().period_ns / 1e9;
     const auto& hybrid = config_.hybrid_attention;
+    const bool pressure_survival = hybrid.cost.storage_survival == "pressure";
     for (const auto& scene : scenes) {
         for (const auto& event : scene.events) {
             const auto time = event.time_seconds;
@@ -451,23 +462,35 @@ JointMemoryCostPolicy::Value JointMemoryCostPolicy::value(const std::vector<Scen
             }
             const HybridRecoveryState repaired(projected, repairs);
             std::vector<HybridCopyChange> at_time;
-            for (const auto id : scene.request.hash_ids) {
-                for (std::size_t kind = 0; kind < 2; ++kind) {
-                    const auto copy = repaired.component(id, kind);
-                    if (!copy.storage || copy.in_dram) { continue; }
-                    const auto& actual = tree_.node(id).hybrid->components[kind];
-                    const bool added = !actual.on_storage() || tree_.node(id).storage_tier != *copy.storage;
-                    const auto touched = added ? now : records_.at(id).copies[kind].value().touched;
-                    auto chance = std::exp(-time / lifetime(id, kind, *copy.storage, now));
-                    if (background > 0 && stats.idle_threshold_seconds > 0) {
-                        const auto eligibility = touched / 1e9 + stats.idle_threshold_seconds;
-                        const auto tick = std::ceil(eligibility / background) * background;
-                        if (now / 1e9 + time >= tick) { chance = 0; }
+            if (pressure_survival || (background > 0 && stats.idle_threshold_seconds > 0)) {
+                for (std::size_t i = 0; i < scene.request.hash_ids.size(); ++i) {
+                    const auto id = scene.request.hash_ids[i];
+                    for (std::size_t kind = 0; kind < 2; ++kind) {
+                        const auto copy = repaired.component(id, kind);
+                        if (!copy.storage || copy.in_dram) { continue; }
+                        const auto& actual = tree_.node(id).hybrid->components[kind];
+                        const bool added = !actual.on_storage() || tree_.node(id).storage_tier != *copy.storage;
+                        const auto touched = added ? now : records_.at(id).copies[kind].value().touched;
+                        bool expired = false;
+                        if (background > 0 && stats.idle_threshold_seconds > 0) {
+                            const auto eligibility = touched / 1e9 + stats.idle_threshold_seconds;
+                            const auto tick = std::ceil(eligibility / background) * background;
+                            expired = now / 1e9 + time >= tick;
+                        }
+                        if (pressure_survival && !expired) {
+                            const auto chance = std::exp(-time / lifetime(id, kind, *copy.storage, now));
+                            // Storage reclaims radix segments, so copies in one
+                            // segment/pool share a survival quantile. Independent block
+                            // draws make long readable prefixes vanish artificially.
+                            const auto cohort = scene.storage_cohorts[i] ^
+                                (storage_tier_index(*copy.storage) * 0xd6e8feb86659fd93ULL);
+                            const auto shift = static_cast<double>((cohort * 11400714819323198485ULL) >> 11) /
+                                9007199254740992.0;
+                            const auto u = std::fmod((event.sample + 0.5) / 3 + shift, 1.0);
+                            expired = u >= chance;
+                        }
+                        if (expired) { at_time.push_back({id, kind, false, false, {}, false, true}); }
                     }
-                    const auto shift = static_cast<double>((id * 11400714819323198485ULL) >> 11) /
-                        9007199254740992.0;
-                    const auto u = std::fmod((event.sample + 0.5) / 3 + shift, 1.0);
-                    if (u >= chance) { at_time.push_back({id, kind, false, false, {}, false, true}); }
                 }
             }
             const auto restored = recovery_.evaluate(scene.request, HybridRecoveryState(repaired, at_time));
@@ -478,7 +501,8 @@ JointMemoryCostPolicy::Value JointMemoryCostPolicy::value(const std::vector<Scen
                 read = std::max(read, service);
                 queued_read = std::max(queued_read, service + std::max(0.0, queue_until[k] - now / 1e9 - time));
             }
-            result.service += event.mass * restored.total_seconds;
+            result.service += event.mass * (restored.load_seconds +
+                hybrid.recompute_weight * restored.compute_seconds);
             result.wait += event.mass * (queued_read - read);
             ++counters_.scenario_evaluations;
         }

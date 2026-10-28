@@ -25,7 +25,9 @@ struct HybridEvictionDecision {
 class HybridFullLruIndex final : public IndexedMemoryLruPolicy {
   public:
     HybridFullLruIndex() : IndexedMemoryLruPolicy(true, 1, 0, 1, 0) {}
-    NodeId victim() const { return select_victim(); }
+    NodeId victim(double context_block_budget) const {
+        return context_block_budget > 0 ? select_context_victim(context_block_budget) : select_victim();
+    }
 };
 
 // Derived policy indices only. All payload/residency authority remains on RadixTree nodes.
@@ -42,10 +44,10 @@ class HybridMemoryIndex {
     std::vector<NodeId> victim(std::size_t kind, const RadixTree& tree,
         const HybridAttentionConfig& config, TimestampNs now, std::uint64_t& examined,
         std::optional<NodeId> incoming = std::nullopt, bool drop_next = false,
-        std::uint64_t linear_budget = 0) const;
+        std::uint64_t candidate_budget = 0) const;
     HybridEvictionDecision decide(std::size_t kind, const RadixTree& tree,
         const HybridAttentionConfig& config, TimestampNs now, std::uint64_t& examined,
-        std::optional<NodeId> incoming, bool legacy_drop, std::uint64_t linear_budget) const;
+        std::optional<NodeId> incoming, bool legacy_drop, std::uint64_t candidate_budget) const;
     HybridEvictionDecision decide_shared(const RadixTree& tree,
         const HybridAttentionConfig& config, TimestampNs now,
         std::array<HybridCounters, 2>& counters, const std::array<bool, 2>& legacy_drop,

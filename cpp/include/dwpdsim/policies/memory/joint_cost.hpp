@@ -83,6 +83,7 @@ class JointMemoryCostPolicy {
     struct Frontier { double pages = 0; std::vector<FrontierRun> runs; };
     struct Scenario {
         HybridPrefillRequest request;
+        std::vector<NodeId> storage_cohorts;
         struct Event {
             double mass, time_seconds;
             std::size_t repaired_full;

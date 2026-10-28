@@ -30,6 +30,7 @@ class IndexedMemoryLruPolicy : public MemoryPolicy {
 
   protected:
     virtual NodeId select_victim() const;
+    NodeId select_context_victim(double candidate_block_budget) const;
     using Key = std::pair<std::uint64_t, NodeId>;
     using Handle = std::uint64_t;
     struct Resident { std::uint64_t recency; Handle segment; };

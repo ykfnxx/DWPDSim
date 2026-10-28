@@ -115,3 +115,5 @@ python3 -m pip --python .venv/bin/python install -e . --force-reinstall --no-dep
 ```
 
 完成运行的原始JSON、配置、日志、源哈希和native副本位于 `build/age-route-cost/final-v6-*`。以前被主动中止的输出含 `aborted.json`，不进入结果表。默认2组/8路径的300秒pilot在 `quote-v6-w1-default-300s`，命中63.4067%；它同样不支持推荐权重1。
+
+固定300秒的indexed/context混合适配对照及同native五组完整比较见 [300秒对照报告](RETENTION_300S.md)。

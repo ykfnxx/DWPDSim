@@ -17,7 +17,7 @@ void HybridMemoryIndex::bind(const RadixTree& tree, const HybridAttentionConfig&
     lru_k_ = config.lru_k;
     frontier_ = config.linear_policy == "frontier_lru" || config.linear_policy == "frontier_guard";
     track_descendants_ = frontier_ || config.linear_retention_policy == "frontier";
-    if (config.full_policy == "indexed_segment_lru") {
+    if (config.full_policy == "indexed_segment_lru" || config.full_policy == "context_lru") {
         full_ = std::make_unique<HybridFullLruIndex>();
         full_->bind_tree(tree);
     }
@@ -129,12 +129,12 @@ std::vector<std::vector<HybridCostObject>> HybridMemoryIndex::cost_candidates(
 
 std::vector<NodeId> HybridMemoryIndex::victim(std::size_t kind, const RadixTree& tree,
     const HybridAttentionConfig& config, TimestampNs now, std::uint64_t& examined,
-    std::optional<NodeId> incoming, bool drop_next, std::uint64_t linear_budget) const {
+    std::optional<NodeId> incoming, bool drop_next, std::uint64_t candidate_budget) const {
     if (use_lru_k_[kind]) {
         ++examined;
         return {std::get<4>(*lru_k_order_[kind].begin())};
     }
-    if (!linear_budget) { linear_budget = config.linear_capacity_bytes; }
+    if (!candidate_budget) { candidate_budget = kind == 0 ? config.full_capacity_bytes : config.linear_capacity_bytes; }
     if (kind == 1) {
         if (frontier_) {
             if (config.linear_policy == "frontier_guard" && !drop_next) {
@@ -155,7 +155,7 @@ std::vector<NodeId> HybridMemoryIndex::victim(std::size_t kind, const RadixTree&
                 }
                 covered += tree.node(key.second).hybrid->components[1].size_bytes;
                 if (static_cast<long double>(covered) >=
-                    config.alpha * static_cast<long double>(linear_budget)) { break; }
+                    config.alpha * static_cast<long double>(candidate_budget)) { break; }
             }
             return {lru_[1].begin()->second};
         }
@@ -209,14 +209,16 @@ std::vector<NodeId> HybridMemoryIndex::victim(std::size_t kind, const RadixTree&
             if (score < best) { best = score; chosen = key.second; }
             covered += c.size_bytes;
             if (static_cast<long double>(covered) >=
-                config.alpha * static_cast<long double>(linear_budget)) { break; }
+                config.alpha * static_cast<long double>(candidate_budget)) { break; }
         }
         return {chosen};
     }
 
     if (full_) {
         const auto before = full_->work().candidates_examined;
-        const auto chosen = full_->victim();
+        const auto context_blocks = config.full_policy == "context_lru" ?
+            config.alpha * static_cast<double>(candidate_budget / config.full_block_bytes) : 0;
+        const auto chosen = full_->victim(context_blocks);
         examined += full_->work().candidates_examined - before;
         std::vector<NodeId> path, result;
         tree.resolve_segment(chosen, path);
@@ -256,9 +258,9 @@ std::vector<NodeId> HybridMemoryIndex::victim(std::size_t kind, const RadixTree&
 
 HybridEvictionDecision HybridMemoryIndex::decide(std::size_t kind, const RadixTree& tree,
     const HybridAttentionConfig& config, TimestampNs now, std::uint64_t& examined,
-    std::optional<NodeId> incoming, bool legacy_drop, std::uint64_t linear_budget) const {
+    std::optional<NodeId> incoming, bool legacy_drop, std::uint64_t candidate_budget) const {
     HybridEvictionDecision result{victim(kind, tree, config, now, examined, incoming,
-        legacy_drop, linear_budget), legacy_drop, kind};
+        legacy_drop, candidate_budget), legacy_drop, kind};
     if (config.eviction_mode != "retention") { return result; }
     TimestampNs last_touch = 0;
     for (const auto id : result.victims) {

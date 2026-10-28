@@ -31,7 +31,7 @@ from dwpdsim.hybrid_mqsim import (
 )
 
 
-def run(output, binary):
+def run(output, binary, retention_baselines=False, recompute_weight=1, storage_survival="pressure"):
     output.mkdir(parents=True, exist_ok=False)
     native = Path(_core.__file__)
     native_sha = hashlib.sha256(native.read_bytes()).hexdigest()
@@ -51,11 +51,13 @@ def run(output, binary):
             full_policy="lru_k", linear_policy="lru_k", replay_mode="prefix_replay",
             tokens_per_block=64, checkpoint_interval_tokens=64,
             checkpoint_generation="request_end", eviction_mode="joint_cost",
+            recompute_weight=recompute_weight,
             cost=JointCostConfig(
                 horizons_seconds=(1, 3, 8), sample_every=1, samples=4,
                 candidates_per_kind=1, scenario_limit=2, wear_weight=0,
                 nand_pages_per_block=4224,
                 mapping_pages_per_block=0,
+                storage_survival=storage_survival,
             ),
         ),
     )
@@ -71,12 +73,22 @@ def run(output, binary):
     ]).encode()).hexdigest()
     results = []
     root = Path(__file__).resolve().parents[1]
-    for name in ("baseline", "joint_cost"):
+    policies = ["baseline", "joint_cost"]
+    if retention_baselines:
+        policies += ["indexed_lru", "context_lru"]
+    for name in policies:
         case = output / name
         case.mkdir()
         selected = cfg if name == "joint_cost" else replace(cfg, hybrid_attention=replace(
             cfg.hybrid_attention, eviction_mode="legacy", cost=JointCostConfig(),
         ))
+        if name in ("indexed_lru", "context_lru"):
+            selected = replace(selected, hybrid_attention=replace(
+                selected.hybrid_attention,
+                full_policy="indexed_segment_lru" if name == "indexed_lru" else "context_lru",
+                linear_policy="checkpoint_lru", eviction_mode="retention", alpha=0.01,
+                full_retention_ns=300 * 10**9, linear_retention_ns=300 * 10**9,
+            ))
         with DWPDSimulator(selected, case / "io") as sim:
             sim.run_hybrid_prefill(requests)
             sim.finish()
@@ -112,5 +124,8 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--binary", type=Path, required=True)
+    parser.add_argument("--retention-baselines", action="store_true")
+    parser.add_argument("--recompute-weight", type=float, default=1)
+    parser.add_argument("--storage-survival", choices=("pressure", "continuation"), default="pressure")
     args = parser.parse_args()
-    run(args.output, args.binary)
+    run(args.output, args.binary, args.retention_baselines, args.recompute_weight, args.storage_survival)

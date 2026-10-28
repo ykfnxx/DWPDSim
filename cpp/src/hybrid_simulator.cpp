@@ -267,7 +267,8 @@ void Simulator::hybrid_admit(NodeId id, std::size_t kind, TimestampNs now) {
                 hybrid_->counters[pool].candidates_examined,
                 pool == kind ? std::optional<NodeId>(id) : std::nullopt,
                 drop_next(cfg, hybrid_->counters[pool], pool),
-                adaptive ? hybrid_->target_bytes[1] : cfg.linear_capacity_bytes);
+                adaptive ? hybrid_->target_bytes[pool] :
+                    (pool == 0 ? cfg.full_capacity_bytes : cfg.linear_capacity_bytes));
         }
         auto& evicted = hybrid_->counters[pool];
         for (auto victim : decision.victims) {

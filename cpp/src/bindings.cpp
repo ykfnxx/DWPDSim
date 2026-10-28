@@ -386,7 +386,8 @@ PYBIND11_MODULE(_core, module) {
         .def_readwrite("nand_page_bytes", &JointCostConfig::nand_page_bytes)
         .def_readwrite("nand_pages_per_block", &JointCostConfig::nand_pages_per_block)
         .def_readwrite("mapping_pages_per_block", &JointCostConfig::mapping_pages_per_block)
-        .def_readwrite("overprovisioning", &JointCostConfig::overprovisioning);
+        .def_readwrite("overprovisioning", &JointCostConfig::overprovisioning)
+        .def_readwrite("storage_survival", &JointCostConfig::storage_survival);
 
     py::class_<HybridAttentionConfig>(module, "HybridAttentionConfig")
         .def(py::init<>())

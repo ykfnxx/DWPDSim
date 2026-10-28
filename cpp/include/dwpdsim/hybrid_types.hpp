@@ -72,17 +72,18 @@ struct JointCostConfig {
     std::uint64_t sample_every = 8, samples = 32, seed = 42;
     std::uint64_t nand_page_bytes = 16384, nand_pages_per_block = 256;
     double mapping_pages_per_block = 1, overprovisioning = 0.125;
+    std::string storage_survival = "pressure";
     bool operator==(const JointCostConfig& r) const {
         return std::tie(horizons_seconds, wear_weight, nand_seconds_per_gib,
             storage_read_bytes_per_second, storage_write_bytes_per_second,
             gpu_bytes_per_second, prefill_tokens_per_second, candidates_per_kind,
             scenario_limit, reclaim_bytes, sample_every, samples, seed, nand_page_bytes,
-            nand_pages_per_block, mapping_pages_per_block, overprovisioning) ==
+            nand_pages_per_block, mapping_pages_per_block, overprovisioning, storage_survival) ==
             std::tie(r.horizons_seconds, r.wear_weight, r.nand_seconds_per_gib,
             r.storage_read_bytes_per_second, r.storage_write_bytes_per_second,
             r.gpu_bytes_per_second, r.prefill_tokens_per_second, r.candidates_per_kind,
             r.scenario_limit, r.reclaim_bytes, r.sample_every, r.samples, r.seed, r.nand_page_bytes,
-            r.nand_pages_per_block, r.mapping_pages_per_block, r.overprovisioning);
+            r.nand_pages_per_block, r.mapping_pages_per_block, r.overprovisioning, r.storage_survival);
     }
 };
 

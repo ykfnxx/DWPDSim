@@ -370,7 +370,7 @@ SimulationConfig Simulator::validate_config(SimulationConfig config) {
             throw std::invalid_argument("shared allocation uses memory.capacity_bytes; component capacity limits must be zero");
         }
         if (shared && !((h.full_policy == "lru_k" && h.linear_policy == "lru_k") ||
-            ((h.full_policy == "segment_lru" || h.full_policy == "indexed_segment_lru") &&
+            ((h.full_policy == "segment_lru" || h.full_policy == "indexed_segment_lru" || h.full_policy == "context_lru") &&
                 h.linear_policy == "checkpoint_lru"))) {
             throw std::invalid_argument("shared allocation requires both lru_k or segment/checkpoint LRU policies");
         }
@@ -415,7 +415,8 @@ SimulationConfig Simulator::validate_config(SimulationConfig config) {
             h.drop_phase != 0 || !h.dump_on_eviction || h.linear_policy == "frontier_guard")) {
             throw std::invalid_argument("retention actions cannot use quotas, drop_phase, dump_on_eviction=false or frontier_guard");
         }
-        if ((h.full_policy != "segment_lru" && h.full_policy != "indexed_segment_lru" && h.full_policy != "lru_k") ||
+        if ((h.full_policy != "segment_lru" && h.full_policy != "indexed_segment_lru" &&
+             h.full_policy != "context_lru" && h.full_policy != "lru_k") ||
             (h.linear_policy != "lru_k" && h.linear_policy != "checkpoint_lru" && h.linear_policy != "frequency" && h.linear_policy != "benefit" &&
              h.linear_policy != "prefix_frequency" && h.linear_policy != "replay_value" && h.linear_policy != "copy_aware" &&
              h.linear_policy != "target_frequency" && h.linear_policy != "target_value" && h.linear_policy != "frontier_lru" &&

@@ -210,7 +210,7 @@ def test_frontier_retention_loss_on_short_branch_is_not_counted_as_a_hit(tmp_pat
     assert results == {"checkpoint_lru": 768, "frontier_lru": 0}
 
 
-@pytest.mark.parametrize("selector", ["segment_lru", "indexed_segment_lru"])
+@pytest.mark.parametrize("selector", ["segment_lru", "indexed_segment_lru", "context_lru"])
 def test_adaptive_scalar_and_buffer_equivalence(tmp_path, selector):
     cfg = config(adaptive=True, full_policy=selector, linear_retention_policy="frontier", linear_retention_ns=10)
     paths = [list(range(1, 17)), list(range(1, 9)) + list(range(30, 42)), list(range(1, 17))]

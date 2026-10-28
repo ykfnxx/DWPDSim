@@ -19,6 +19,16 @@ LINEAR/KDA checkpoint 独立管理，支持两类对象的 LRU-K 基线。真正
 不代表完整复现 Gandalf。
 
 现有WEKA数据的配对验证、参数与复现命令见 [实验记录](docs/age-route-cost/EXPERIMENTS.md)。
+`cost.storage_survival="continuation"`、媒体权重0、重算优先级1的迭代配置已完成一小时及两小时配对：
+命中率均高于LRU-2，总分配主机写入比indexed/context300s降低约32%–37%。各组距无限SSD上限的差距、
+完整参数和验证边界见 [优化报告](docs/age-route-cost/OPTIMIZATION.md)。
+
+混合模式支持 `full_policy="context_lru"`，复用原 context LRU 的冷段候选预算和
+`(endpoint depth, resident block count, recency)` 排序。候选预算为 `alpha * FULL等效容量块数`；
+shared模式以总DRAM容量折算，不划分FULL配额。搭配 `linear_policy="checkpoint_lru"`，
+`eviction_mode="retention"` 及 `full_retention_ns=linear_retention_ns=300_000_000_000`
+可比较固定300秒阈值。两种组件都只回收选中单元，不执行旧接口的向父段贪婪Dump。
+配对结果与复现命令见 [300秒对照](docs/age-route-cost/RETENTION_300S.md)。
 
 ## 行为语义
 

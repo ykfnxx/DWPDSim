@@ -115,29 +115,8 @@ void ContextMemoryLruPolicy::on_node_pruned(
 }
 
 NodeId ContextMemoryLruPolicy::select_victim() const {
-    using Score = std::tuple<std::uint64_t, std::size_t, Key>;
-    std::optional<Score> best;
-    std::uint64_t covered = 0;
-    for (const Key& key : groups_.front()) {
-        ++work_.candidates_examined;
-        const NodeId endpoint = key.second;
-        const auto count = subtree_memory_.find(endpoint);
-        const auto subtree = count == subtree_memory_.end() ? 0 : count->second;
-        if (subtree != residents_.count(endpoint)) { continue; }
-
-        const auto blocks = segments_.at(endpoints_.at(endpoint)).members.size();
-        std::uint64_t depth = 0;
-        for (std::optional<NodeId> node = endpoint; node; node = tree_->parent(*node)) {
-            ++depth;
-        }
-        const Score score{depth, blocks, key};
-        if (!best || score < *best) { best = score; }
-        covered += blocks;
-        // Whole segments enter the candidate set, including the one crossing the budget.
-        if (static_cast<double>(covered) >= candidate_block_budget_) { break; }
-    }
-    assert(best.has_value());
-    return std::get<2>(*best).second;
+    return select_context_victim(candidate_block_budget_);
 }
+
 
 }  // namespace dwpdsim

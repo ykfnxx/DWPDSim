@@ -47,12 +47,21 @@ def configuration(manifest, args):
     profile = kimi_k3_profile(tokens_per_block=manifest["tokens_per_block"])
     hybrid = profile.hybrid_config(lru_k=args.k, emit_io_trace=args.emit_io_trace)
     if args.memory_policy == "joint_cost":
-        hybrid = replace(hybrid, eviction_mode="joint_cost", cost=JointCostConfig(
+        hybrid = replace(hybrid, eviction_mode="joint_cost", recompute_weight=args.cost_recompute_weight,
+                         cost=JointCostConfig(
             wear_weight=args.cost_weight, candidates_per_kind=args.cost_candidates,
             scenario_limit=args.cost_scenarios, reclaim_bytes=args.cost_reclaim_bytes,
             nand_pages_per_block=args.cost_pages_per_block,
             mapping_pages_per_block=args.cost_mapping_pages_per_block,
+            storage_survival=args.cost_storage_survival,
         ))
+    elif args.memory_policy in ("indexed_lru", "context_lru"):
+        hybrid = replace(
+            hybrid, full_policy="indexed_segment_lru" if args.memory_policy == "indexed_lru" else "context_lru",
+            linear_policy="checkpoint_lru", eviction_mode="retention", alpha=args.context_alpha,
+            full_retention_ns=round(args.retention_seconds * 10**9),
+            linear_retention_ns=round(args.retention_seconds * 10**9),
+        )
     return SimulationConfig(
         memory=MemoryConfig(args.memory_bytes), block_size_bytes=unit,
         slc=StorageTierConfig(unit if infinite else slc, args.streams),
@@ -83,7 +92,7 @@ def audit_stats(stats, cfg, count, tokens, checkpoints):
     assert pool["resident_bytes"] <= pool["peak_resident_bytes"] <= cfg.memory.capacity_bytes
     for c in ("full", "linear"):
         component = stats[c]
-        if cfg.hybrid_attention.eviction_mode != "joint_cost":
+        if cfg.hybrid_attention.eviction_mode == "legacy":
             assert component["drop_objects"] == 0
         assert component["dram_hits"] + component["storage_hits"] == component["demands"]
     if cfg.storage_policy.kind != "infinite_storage":
@@ -240,9 +249,16 @@ def main():
     parser.add_argument("--capacity-tb", type=int, choices=(1, 4), default=4)
     parser.add_argument("--memory-bytes", type=int, default=100_000_000_000)
     parser.add_argument("--k", type=int, default=2)
-    parser.add_argument("--memory-policy", choices=("baseline", "joint_cost"), default="baseline")
+    parser.add_argument("--memory-policy", choices=("baseline", "joint_cost", "indexed_lru", "context_lru"), default="baseline")
+    parser.add_argument("--retention-seconds", type=float, default=300,
+                        help="fixed FULL/LINEAR idle threshold for indexed_lru and context_lru")
+    parser.add_argument("--context-alpha", type=float, default=0.01,
+                        help="context_lru cold-candidate budget as a fraction of shared DRAM")
     parser.add_argument("--streams", type=int, default=1)
     parser.add_argument("--cost-weight", type=float, default=1)
+    parser.add_argument("--cost-recompute-weight", type=float, default=1,
+                        help="priority of predicted suffix compute relative to recovery transfer time")
+    parser.add_argument("--cost-storage-survival", choices=("pressure", "continuation"), default="pressure")
     parser.add_argument("--cost-candidates", type=int, default=2)
     parser.add_argument("--cost-scenarios", type=int, default=8)
     parser.add_argument("--cost-reclaim-bytes", type=int, default=0)
